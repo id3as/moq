@@ -147,6 +147,10 @@ export class Consumer {
 			this.#groups.push(group);
 			this.#groups.sort((a, b) => a.consumer.sequence - b.consumer.sequence);
 
+			// If #active parked in a gap below the (new) oldest group, snap it
+			// forward so this group plays rather than stalling until a skip.
+			this.#syncActive();
+
 			// Start buffering frames from this group
 			this.#signals.spawn(this.#runGroup.bind(this, group));
 		}
@@ -157,10 +161,10 @@ export class Consumer {
 			let index = 0;
 
 			for (;;) {
-				const next = await group.consumer.readFrame();
+				const next = await group.consumer.readFrameSequence();
 				if (!next) break;
 
-				const decoded = this.#format.decode(next);
+				const decoded = this.#format.decode(next.data, next.extensions);
 
 				for (const sample of decoded) {
 					const frame: Frame = {
@@ -201,10 +205,9 @@ export class Consumer {
 		} finally {
 			group.done = true;
 
-			if (group.consumer.sequence === this.#active) {
-				// Advance to the next group.
-				this.#active += 1;
-			}
+			// #active advances when a group is *removed* (fully played) in next(),
+			// via #syncActive — a group finishing reading doesn't mean it's played.
+			// (Group ids are not consecutive, so we never `+= 1`; see #syncActive.)
 
 			// Recompute buffered ranges now that this group is done,
 			// so consecutive done groups can merge into a single range.
@@ -216,6 +219,20 @@ export class Consumer {
 			this.#notify = undefined;
 
 			group.consumer.close();
+		}
+	}
+
+	// Snap #active forward to the oldest buffered group when it has fallen into a
+	// gap below it. MoQ group ids track the media clock and are NOT necessarily
+	// consecutive (spec §2.3.1; gaps are explicit via §12.8 Prior Group ID Gap),
+	// so advancing by `+ 1` lands in a gap and the next real group never becomes
+	// active — it buffers until #checkLatency skips it. Snapping to the oldest
+	// actual sequence lets next() play each group. Only ever moves forward to the
+	// oldest available group (never past it), so it can't skip content.
+	#syncActive(): void {
+		const oldest = this.#groups[0]?.consumer.sequence;
+		if (oldest !== undefined && (this.#active === undefined || this.#active < oldest)) {
+			this.#active = oldest;
 		}
 	}
 
@@ -364,6 +381,10 @@ export class Consumer {
 			// now that delivery has advanced the edge.
 			this.#checkBufferedReset();
 
+			// Keep #active tracking the oldest buffered group across non-consecutive
+			// group ids (see #syncActive).
+			this.#syncActive();
+
 			if (
 				this.#groups.length > 0 &&
 				this.#active !== undefined &&
@@ -388,12 +409,10 @@ export class Consumer {
 				// The latter handles the case where #runGroup finished before
 				// #active reached this group (e.g. after a latency skip).
 				if (this.#active > this.#groups[0].consumer.sequence || this.#groups[0].done) {
-					if (this.#groups[0].consumer.sequence === this.#active) {
-						this.#active += 1;
-					}
-
 					const group = this.#groups.shift();
 					if (group) {
+						// Advance to the next buffered group (ids are not consecutive).
+						this.#syncActive();
 						this.#updateBuffered();
 						return {
 							frame: undefined,
@@ -438,7 +457,11 @@ export class Consumer {
 			const end = Moq.Time.Milli.fromMicro(group.latest);
 
 			const last = ranges.at(-1);
-			const contiguous = prev?.done && prev.consumer.sequence + 1 === group.consumer.sequence;
+			// `prev` is the immediately-preceding buffered group (this loop walks
+			// #groups in ascending order), so a done `prev` means these two groups
+			// are buffer-adjacent. We can't test `prev.sequence + 1 === sequence`
+			// because group ids are not consecutive (spec §2.3.1).
+			const contiguous = prev?.done === true;
 			if (last && (last.end >= start || contiguous)) {
 				last.end = Moq.Time.Milli.max(last.end, end);
 			} else {
