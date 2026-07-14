@@ -131,9 +131,14 @@ export class Group {
 export class Frame {
 	// undefined means end of group
 	payload?: Uint8Array;
+	// Raw MOQ Object Properties / extension-header bytes (§11.2.1.2), if the
+	// subgroup carried the PROPERTIES bit. draft-ietf-moq-loc-03 rides its
+	// Timestamp/Timescale/VideoConfig here; undefined when there were none.
+	extensions?: Uint8Array;
 
-	constructor({ payload }: { payload?: Uint8Array } = {}) {
+	constructor({ payload, extensions }: { payload?: Uint8Array; extensions?: Uint8Array } = {}) {
 		this.payload = payload;
+		this.extensions = extensions;
 	}
 
 	async encode(w: Writer, flags: GroupFlags): Promise<void> {
@@ -163,17 +168,20 @@ export class Frame {
 			throw new Error(`object ID delta is not supported: ${delta}`);
 		}
 
+		let extensions: Uint8Array | undefined;
 		if (flags.hasExtensions) {
 			const extensionsLength = await r.u53();
-			// We don't care about extensions
-			await r.read(extensionsLength);
+			// Keep the extension bytes so per-object metadata (e.g. the LOC
+			// Timestamp/Timescale/VideoConfig, draft-ietf-moq-loc-03 §2.3) survives
+			// up to the container decoder instead of being dropped here.
+			if (extensionsLength > 0) extensions = await r.read(extensionsLength);
 		}
 
 		const payloadLength = await r.u53();
 
 		if (payloadLength > 0) {
 			const payload = await r.read(payloadLength);
-			return new Frame({ payload });
+			return new Frame({ payload, extensions });
 		}
 
 		const status = await r.u53();

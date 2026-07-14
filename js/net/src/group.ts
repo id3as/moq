@@ -1,8 +1,14 @@
 import { Signal } from "@moq/signals";
 
 /** Reactive backing state for a {@link Group}: buffered frames, a closed flag, and the running frame count. */
+/** A buffered frame: its payload plus any raw MOQ Object Properties bytes. */
+interface BufferedFrame {
+	data: Uint8Array;
+	extensions?: Uint8Array;
+}
+
 class GroupState {
-	frames = new Signal<Uint8Array[]>([]);
+	frames = new Signal<BufferedFrame[]>([]);
 	closed = new Signal<boolean | Error>(false);
 	total = new Signal<number>(0); // The total number of frames in the group thus far
 }
@@ -36,11 +42,11 @@ export class Group {
 	 * Writes a frame to the group.
 	 * @param frame - The frame to write
 	 */
-	writeFrame(frame: Uint8Array) {
+	writeFrame(frame: Uint8Array, extensions?: Uint8Array) {
 		if (this.#state.closed.peek()) throw new Error("group is closed");
 
 		this.#state.frames.mutate((frames) => {
-			frames.push(frame);
+			frames.push({ data: frame, extensions });
 		});
 
 		this.#state.total.update((total) => total + 1);
@@ -79,11 +85,11 @@ export class Group {
 	}
 
 	/** Like {@link tryReadFrame} but also reports the frame's sequence number within the group. */
-	tryReadFrameSequence(): { sequence: number; data: Uint8Array } | undefined {
+	tryReadFrameSequence(): { sequence: number; data: Uint8Array; extensions?: Uint8Array } | undefined {
 		const frames = this.#state.frames.peek();
-		const data = frames.shift();
-		if (data === undefined) return undefined;
-		return { sequence: this.#state.total.peek() - frames.length - 1, data };
+		const frame = frames.shift();
+		if (frame === undefined) return undefined;
+		return { sequence: this.#state.total.peek() - frames.length - 1, data: frame.data, extensions: frame.extensions };
 	}
 
 	/**
@@ -111,7 +117,7 @@ export class Group {
 	}
 
 	/** Reads the next frame along with its sequence number within the group. */
-	async readFrameSequence(): Promise<{ sequence: number; data: Uint8Array } | undefined> {
+	async readFrameSequence(): Promise<{ sequence: number; data: Uint8Array; extensions?: Uint8Array } | undefined> {
 		for (;;) {
 			const next = this.tryReadFrameSequence();
 			if (next) return next;
