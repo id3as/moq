@@ -365,11 +365,13 @@ async function connectWebTransport(
 			Lite.ALPN_04,
 			Lite.ALPN_03,
 			Lite.ALPN,
-			Ietf.ALPN.DRAFT_19,
-			Ietf.ALPN.DRAFT_18,
-			Ietf.ALPN.DRAFT_17,
-			Ietf.ALPN.DRAFT_16,
-			Ietf.ALPN.DRAFT_15,
+			// NOTE(norsk): the IETF draft ALPNs (moqt-15..19) are intentionally NOT
+			// offered. norsk advertises moqt-16, and net's draft-16 data-plane
+			// reader can't yet consume norsk's (correct) draft-16 subgroup objects,
+			// so negotiating moqt-16 breaks media playback. Offering only the
+			// moq-lite ALPNs makes the WebTransport handshake settle on no IETF
+			// protocol → net's draft-14 fallback (connect.ts §"Lite.ALPN | ''"),
+			// which norsk serves fine. Restore these once net draft-16 works.
 		],
 		...webtransport,
 	};
