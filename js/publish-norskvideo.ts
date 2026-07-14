@@ -28,6 +28,10 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+// Resolve package dirs relative to THIS file (the js/ workspace root), so the
+// script works regardless of the cwd it's invoked from.
+const JS_DIR = import.meta.dir;
+
 // Forked packages IN DEPENDENCY (publish) ORDER. Dir name === @moq/<dir>.
 // External deps not listed here (notably @moq/qmux) are left on the @moq scope.
 const FORKED = ["signals", "flate", "net", "json", "loc", "msf", "hang", "watch"] as const;
@@ -65,13 +69,13 @@ function walkFiles(dir: string, out: string[] = []): string[] {
 console.log("── building all packages ──");
 for (const dir of FORKED) {
 	console.log(`\n▶ build ${dir}`);
-	execFileSync("bun", ["run", "build"], { cwd: dir, stdio: "inherit" });
+	execFileSync("bun", ["run", "build"], { cwd: join(JS_DIR, dir), stdio: "inherit" });
 }
 
 // ── phase 2: rewrite each dist/ to @norskvideo, then publish ─────────
 console.log(`\n── ${doPublish ? "publishing" : "DRY RUN (npm pack)"} @ ${VERSION} ──`);
 for (const dir of FORKED) {
-	const distDir = join(dir, "dist");
+	const distDir = join(JS_DIR, dir, "dist");
 	const pkgPath = join(distDir, "package.json");
 	const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
 
