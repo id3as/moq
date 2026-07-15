@@ -44,9 +44,13 @@ export class Emitter {
 			paused: getter(props?.paused ?? false),
 		};
 
-		// Only download while playing audible audio. Pausing or muting stops it.
+		// Only download while playing. `paused` gates whether we download/decode
+		// audio at all; `muted` only silences the gain (see the field comments).
+		// Folding `muted` in here would disable the source, freezing the audio
+		// clock — and, once audio is the sync reference, stalling the video on a
+		// spinner.
 		this.#signals.run((effect) => {
-			const enabled = !effect.get(this.in.paused) && !effect.get(this.in.muted);
+			const enabled = !effect.get(this.in.paused);
 			this.#out.enabled.set(enabled);
 		});
 
@@ -68,6 +72,21 @@ export class Emitter {
 				gain.connect(root.context.destination); // speakers
 				inner.cleanup(() => gain.disconnect());
 			});
+		});
+
+		// Resume the AudioContext when unmuted. Browsers block autoplay until a
+		// user gesture, and unmuting is that gesture. We keep the source enabled
+		// through mute (so the sync clock never stalls the video), which means the
+		// decoder's enable-driven resume no longer re-fires on unmute — so drive
+		// the resume from the mute state here instead.
+		this.#signals.run((effect) => {
+			const root = effect.get(this.source.out.root);
+			if (!root) return;
+			if (effect.get(this.in.muted)) return;
+			// root.context is typed BaseAudioContext; the decoder always creates a
+			// full AudioContext, which is the one with resume().
+			const context = root.context as AudioContext;
+			if (context.state === "suspended") void context.resume();
 		});
 
 		this.#signals.run((effect) => {
