@@ -60,6 +60,10 @@ export default class MoqWatchUi extends HTMLElement {
 			tab: new Signal<Tab>("quality"),
 		};
 
+		// `live` mode drops VOD-only affordances (play/pause, center play prompt)
+		// that don't apply to a live stream. Set the `live` attribute on <moq-watch-ui>.
+		const live = this.hasAttribute("live");
+
 		const player = DOM.create("div", { className: "player" });
 
 		// The slotted <moq-watch> (canvas/video) sits at the base of the stack.
@@ -67,8 +71,8 @@ export default class MoqWatchUi extends HTMLElement {
 
 		// Center affordances: play prompt + buffering spinner + offline / unsupported-codec notice.
 		const center = DOM.create("div", { className: "center" });
+		if (!live) center.append(centerPlay(effect, watch));
 		center.append(
-			centerPlay(effect, watch),
 			bufferingIndicator(effect, watch),
 			offlineIndicator(effect, watch),
 			unsupportedIndicator(effect, watch),
@@ -81,7 +85,7 @@ export default class MoqWatchUi extends HTMLElement {
 		const chrome = DOM.create("div", { className: "chrome" });
 		chrome.append(
 			DOM.create("div", { className: "scrim scrim--bottom" }),
-			controlBar(effect, watch, state, player),
+			controlBar(effect, watch, state, player, live),
 		);
 
 		const panel = settingsPanel(effect, watch, state);
