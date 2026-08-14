@@ -836,54 +836,79 @@ function createEsdsBox(sampleRate: number, channelCount: number, description?: s
 	return esds;
 }
 
+const OPUS_HEAD_MAGIC = [0x4f, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64]; // "OpusHead"
+
+/** True if the bytes begin with the Ogg OpusHead magic signature. */
+function hasOpusHeadMagic(bytes: Uint8Array): boolean {
+	return bytes.length >= 8 && OPUS_HEAD_MAGIC.every((b, i) => bytes[i] === b);
+}
+
+/**
+ * Convert an Ogg OpusHead (RFC 7845 §5.1: 8-byte magic, then little-endian
+ * fields) into an ISOBMFF dOps box body (same fields, no magic, big-endian,
+ * Version 0). WebCodecs' Opus `decoderConfig.description` is an Ogg OpusHead, so
+ * copying it verbatim into a dOps box yields a malformed box that a spec demuxer
+ * rejects.
+ */
+function opusHeadToDOpsBody(head: Uint8Array): Uint8Array {
+	const src = new DataView(head.buffer, head.byteOffset, head.byteLength);
+	const outputChannelCount = head[9];
+	const preSkip = src.getUint16(10, true);
+	const inputSampleRate = src.getUint32(12, true);
+	const outputGain = src.getInt16(16, true);
+	const family = head[18];
+	// Family 0 has no mapping table; otherwise StreamCount + CoupledCount + one
+	// byte per output channel follow, and carry over unchanged (single bytes).
+	const mapping = family === 0 ? new Uint8Array(0) : head.subarray(19, 19 + 2 + outputChannelCount);
+
+	const body = new Uint8Array(11 + mapping.length);
+	const out = new DataView(body.buffer);
+	body[0] = 0; // Version
+	body[1] = outputChannelCount;
+	out.setUint16(2, preSkip, false);
+	out.setUint32(4, inputSampleRate, false);
+	out.setInt16(8, outputGain, false);
+	body[10] = family;
+	body.set(mapping, 11);
+	return body;
+}
+
+/** Wrap a dOps box body (the OpusSpecificBox fields) in its box header. */
+function boxDOps(body: Uint8Array): Uint8Array {
+	const dOps = new Uint8Array(8 + body.length);
+	new DataView(dOps.buffer).setUint32(0, dOps.length, false);
+	dOps[4] = 0x64; // 'd'
+	dOps[5] = 0x4f; // 'O'
+	dOps[6] = 0x70; // 'p'
+	dOps[7] = 0x73; // 's'
+	dOps.set(body, 8);
+	return dOps;
+}
+
 /**
  * Creates a dOps (Opus Specific) box.
  * See https://opus-codec.org/docs/opus_in_isobmff.html
  */
 function createDOpsBox(channelCount: number, sampleRate: number, description?: string): Uint8Array {
-	// If description is provided, it's the OpusHead without the magic signature
 	if (description) {
-		const opusHead = Hex.toBytes(description);
-		const dOpsSize = 8 + opusHead.length;
-		const dOps = new Uint8Array(dOpsSize);
-		const view = new DataView(dOps.buffer);
-
-		view.setUint32(0, dOpsSize, false);
-		dOps[4] = 0x64; // 'd'
-		dOps[5] = 0x4f; // 'O'
-		dOps[6] = 0x70; // 'p'
-		dOps[7] = 0x73; // 's'
-		dOps.set(opusHead, 8);
-
-		return dOps;
+		const bytes = Hex.toBytes(description);
+		// WebCodecs hands us an Ogg OpusHead (magic + little-endian); convert it.
+		// Anything already lacking the magic is assumed to be a dOps body and used as-is.
+		return boxDOps(hasOpusHeadMagic(bytes) ? opusHeadToDOpsBody(bytes) : bytes);
 	}
 
-	// Build minimal dOps box
+	// No description: build a minimal dOps body from scratch.
 	// dOps structure: Version (1) + OutputChannelCount (1) + PreSkip (2) +
 	// InputSampleRate (4) + OutputGain (2) + ChannelMappingFamily (1)
-	const dOpsSize = 8 + 11; // box header + content
-	const dOps = new Uint8Array(dOpsSize);
-	const view = new DataView(dOps.buffer);
-
-	let offset = 0;
-	view.setUint32(offset, dOpsSize, false);
-	offset += 4;
-	dOps[offset++] = 0x64; // 'd'
-	dOps[offset++] = 0x4f; // 'O'
-	dOps[offset++] = 0x70; // 'p'
-	dOps[offset++] = 0x73; // 's'
-
-	dOps[offset++] = 0; // Version
-	dOps[offset++] = channelCount;
-	view.setUint16(offset, 312, false);
-	offset += 2; // PreSkip (typical value)
-	view.setUint32(offset, sampleRate, false);
-	offset += 4; // InputSampleRate
-	view.setInt16(offset, 0, false);
-	offset += 2; // OutputGain
-	dOps[offset++] = 0; // ChannelMappingFamily (0 = mono/stereo)
-
-	return dOps;
+	const body = new Uint8Array(11);
+	const view = new DataView(body.buffer);
+	body[0] = 0; // Version
+	body[1] = channelCount;
+	view.setUint16(2, 312, false); // PreSkip (typical value)
+	view.setUint32(4, sampleRate, false); // InputSampleRate
+	view.setInt16(8, 0, false); // OutputGain
+	body[10] = 0; // ChannelMappingFamily (0 = mono/stereo)
+	return boxDOps(body);
 }
 
 export interface DataSegmentOptions {
