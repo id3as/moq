@@ -17,6 +17,7 @@ export * from "./hex";
 export * from "./integers";
 export * from "./json";
 export * from "./mode";
+export * from "./msf";
 export * from "./path";
 export * from "./priority";
 export * from "./root";

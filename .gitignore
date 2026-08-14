@@ -71,3 +71,7 @@ jsr.json
 *.stackdump
 
 js/watch/dist-norsk/
+
+# Locally packed @norskvideo tarballs (publish-norskvideo.ts dry run), for
+# file: installs into a consumer without republishing to npm.
+local-packs/

@@ -27,6 +27,7 @@
 		"@libav.js/variant-opus-af": "^6.10.9",
 		"@moq/json": "workspace:^",
 		"@moq/loc": "workspace:^",
+		"@moq/msf": "workspace:^",
 		"@moq/net": "workspace:^",
 		"@moq/signals": "workspace:^",
 		"@svta/cml-iso-bmff": "^1.0.6",
