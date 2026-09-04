@@ -42,10 +42,20 @@ const newName = (dir: string) => `${SCOPE}/moq-${dir}`; // @moq/net -> @norskvid
 // ── args ─────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
 const doPublish = args.includes("--publish");
+// npm 2FA: a publish to a scope with "Require two-factor authentication" needs a
+// one-time password, and there is no way to supply it after the fact -- npm
+// fails with EOTP and publishes nothing. Passed through to every package, since
+// each `npm publish` is a separate authenticated call. An OTP is short-lived, so
+// if the run outlives it npm will reject the remaining packages; re-run with a
+// fresh code and the already-published ones fail as duplicates, which is safe.
+// An automation token (npm token create --read-and-publish) avoids OTPs
+// entirely and is the better answer for CI.
+const otpIdx = args.indexOf("--otp");
+const OTP = otpIdx >= 0 ? args[otpIdx + 1] : undefined;
 const vIdx = args.indexOf("--version");
 const VERSION = vIdx >= 0 ? args[vIdx + 1] : undefined;
 if (!VERSION || VERSION.startsWith("--")) {
-	console.error("usage: bun run publish-norskvideo.ts --version X.Y.Z [--publish]");
+	console.error("usage: bun run publish-norskvideo.ts --version X.Y.Z [--publish] [--otp CODE]");
 	process.exit(1);
 }
 
@@ -104,6 +114,7 @@ for (const dir of FORKED) {
 
 	console.log(`\n▶ ${doPublish ? "publish" : "pack"} ${pkg.name}@${VERSION}`);
 	const npmArgs = doPublish ? ["publish", "--access", "public"] : ["pack", "--dry-run"];
+	if (doPublish && OTP) npmArgs.push("--otp", OTP);
 	execFileSync("npm", npmArgs, { cwd: distDir, stdio: "inherit" });
 }
 
