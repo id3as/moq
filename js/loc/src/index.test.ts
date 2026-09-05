@@ -1,118 +1,90 @@
 import { expect, test } from "bun:test";
-import { type Time, Varint } from "@moq/net";
-import { Format } from "./index.ts";
+import { Group, Time, Track } from "@moq/net";
+import { Format, Producer } from "./index.ts";
 
-const PROP_TIMESCALE = 0x08;
-const PROP_TIMESTAMP = 0x10;
-const PROP_TIMESTAMP_DRAFT03 = 0x06;
+/**
+ * These tests were rewritten when LOC moved to the format the draft actually
+ * specifies. They used to build a length-prefixed property block INSIDE the
+ * payload and assert it was parsed back out; draft-ietf-moq-loc-04 §6.1 puts the
+ * public properties in the MOQ Object Properties on the object header, and leaves
+ * the payload as the bare bitstream. So the contract under test is now "the
+ * timing comes off the object header and the payload is returned untouched".
+ */
 
-function buildFrame(props: Uint8Array, payload: Uint8Array): Uint8Array {
-	const lenBytes = Varint.encode(props.byteLength);
-	const out = new Uint8Array(lenBytes.byteLength + props.byteLength + payload.byteLength);
-	out.set(lenBytes, 0);
-	out.set(props, lenBytes.byteLength);
-	out.set(payload, lenBytes.byteLength + props.byteLength);
-	return out;
+function wire(payload: Uint8Array, timestamp: Time.Timestamp): Group.Frame {
+	return { payload, timestamp };
 }
 
-function concat(...parts: Uint8Array[]): Uint8Array {
-	const total = parts.reduce((n, p) => n + p.byteLength, 0);
-	const out = new Uint8Array(total);
-	let offset = 0;
-	for (const part of parts) {
-		out.set(part, offset);
-		offset += part.byteLength;
-	}
-	return out;
-}
-
-test("Format decodes timestamp at default microseconds timescale", () => {
-	const props = concat(Varint.encode(PROP_TIMESTAMP), Varint.encode(12_345));
+test("Format takes its timing from the object header", () => {
 	const payload = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
-	const frame = buildFrame(props, payload);
+	const [frame] = new Format().decode(wire(payload, Time.Timestamp.fromMicros(12_345)));
 
-	const fmt = new Format();
-	const [decoded] = fmt.decode(frame);
-
-	expect(decoded.timestamp).toBe(12_345 as Time.Micro);
-	expect(decoded.payload).toEqual(payload);
-	expect(decoded.keyframe).toBe(false);
+	expect(frame.timestamp).toBe(12_345 as Time.Micro);
+	expect(frame.payload).toEqual(payload);
 });
 
-test("Format honors per-frame timescale property", () => {
-	// timestamp = 96000 at per-frame timescale 48000 -> 2 seconds = 2_000_000 micros
-	const props = concat(
-		Varint.encode(PROP_TIMESCALE),
-		Varint.encode(48_000),
-		Varint.encode(PROP_TIMESTAMP - PROP_TIMESCALE), // delta to 0x10
-		Varint.encode(96_000),
+test("Format honours a non-microsecond timescale", () => {
+	// moq-net resolves an object-scope Timescale (0x08) into the Timestamp's own
+	// scale before we ever see it, so a 90 kHz stamp of 9000 is 100 ms.
+	const [frame] = new Format().decode(
+		wire(new Uint8Array([1]), new Time.Timestamp(9_000, Time.Timescale(90_000))),
 	);
-	const frame = buildFrame(props, new Uint8Array());
 
-	const fmt = new Format();
-	const [decoded] = fmt.decode(frame);
-
-	expect(decoded.timestamp).toBe(2_000_000 as Time.Micro);
+	expect(frame.timestamp).toBe(100_000 as Time.Micro);
 });
 
-test("Format skips unknown odd-typed properties", () => {
-	// 0x0d video config bytes [1,2,3], then 0x10 (delta 3) timestamp
-	const props = concat(
-		Varint.encode(0x0d),
-		Varint.encode(3),
-		new Uint8Array([0x01, 0x02, 0x03]),
-		Varint.encode(PROP_TIMESTAMP - 0x0d),
-		Varint.encode(10),
-	);
-	const payload = new Uint8Array([0xaa]);
-	const frame = buildFrame(props, payload);
+test("Format returns the payload byte-for-byte, stripping nothing", () => {
+	// The regression this file exists for. A payload whose leading bytes look like
+	// a property block must NOT be cut: an in-payload block cannot be told apart
+	// from codec data (a stereo AAC-LC raw_data_block's first byte reads as a
+	// plausible count), so stripping silently truncates good media. shaka-player
+	// removed its equivalent strip for exactly this reason.
+	const looksLikeProps = new Uint8Array([0x03, 0x10, 0xb9, 0x60, 0xde, 0xad]);
+	const [frame] = new Format().decode(wire(looksLikeProps, Time.Timestamp.fromMicros(1)));
 
-	const fmt = new Format();
-	const [decoded] = fmt.decode(frame);
-
-	expect(decoded.timestamp).toBe(10 as Time.Micro);
-	expect(decoded.payload).toEqual(payload);
+	expect(frame.payload).toEqual(looksLikeProps);
+	expect(frame.payload.byteLength).toBe(6);
 });
 
-test("Format throws when the timestamp property is missing", () => {
-	const props = concat(Varint.encode(PROP_TIMESCALE), Varint.encode(1000));
-	const frame = buildFrame(props, new Uint8Array([0xff]));
+test("Producer writes the bare bitstream, with no in-payload property block", async () => {
+	// The other half of the same bug: the payload on the wire must be exactly what
+	// the caller encoded. moq-net writes the Timestamp as an object property.
+	// NB an in-process producer->subscriber keeps the Timestamp object as written,
+	// so this does NOT exercise the track-timescale requirement in Producer's
+	// docs -- that only bites once moq-net converts into the track's scale on the
+	// wire. It is covered instead by norsk's moq_browser_loc_publish test.
+	const track = new Track.Producer("video");
+	const sub = track.subscribe();
+	const producer = new Producer(track);
 
-	const fmt = new Format();
-	expect(() => fmt.decode(frame)).toThrow(/timestamp/);
+	const au = new Uint8Array([0x00, 0x00, 0x00, 0x01, 0x65, 0x88]);
+	producer.encode(au, 40_000 as Time.Micro, true);
+
+	const frame = await sub.readFrame();
+	expect(frame).toBeDefined();
+	expect(frame?.payload).toEqual(au);
+	expect(frame?.timestamp.asMicros()).toBe(40_000);
 });
 
-test("Format rejects zero per-frame timescale", () => {
-	const props = concat(
-		Varint.encode(PROP_TIMESCALE),
-		Varint.encode(0),
-		Varint.encode(PROP_TIMESTAMP - PROP_TIMESCALE),
-		Varint.encode(10),
-	);
-	const frame = buildFrame(props, new Uint8Array([0xaa]));
+test("Producer round-trips through Format unchanged", async () => {
+	const track = new Track.Producer("video");
+	const sub = track.subscribe();
+	const producer = new Producer(track);
 
-	const fmt = new Format();
-	expect(() => fmt.decode(frame)).toThrow(/timescale/);
+	const au = new Uint8Array([9, 8, 7, 6, 5]);
+	producer.encode(au, 120_000 as Time.Micro, true);
+
+	const frame = await sub.readFrame();
+	if (!frame) throw new Error("no frame");
+	const [decoded] = new Format().decode(frame);
+
+	expect(decoded.payload).toEqual(au);
+	expect(decoded.timestamp).toBe(120_000 as Time.Micro);
 });
 
-test("Format throws when properties_length exceeds frame size", () => {
-	const lenBytes = Varint.encode(100);
-	const buf = new Uint8Array(lenBytes.byteLength + 1);
-	buf.set(lenBytes, 0);
-	buf[lenBytes.byteLength] = 0x10;
+test("Producer requires a keyframe before any delta frame", () => {
+	const track = new Track.Producer("video");
+	const producer = new Producer(track);
 
-	const fmt = new Format();
-	expect(() => fmt.decode(buf)).toThrow();
-});
-
-test("Format decodes the draft-03 timestamp property", () => {
-	const props = concat(Varint.encode(PROP_TIMESTAMP_DRAFT03), Varint.encode(4242));
-	const payload = new Uint8Array([0x01]);
-	const frame = buildFrame(props, payload);
-
-	const fmt = new Format();
-	const [decoded] = fmt.decode(frame);
-
-	expect(decoded.timestamp).toBe(4242 as Time.Micro);
-	expect(decoded.payload).toEqual(payload);
+	expect(() => producer.encode(new Uint8Array([1]), 0 as Time.Micro, false)).toThrow();
 });

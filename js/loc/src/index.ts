@@ -1,6 +1,25 @@
 /**
- * Low Overhead Container (LOC): encode and decode codec bitstreams framed with
- * per-frame timestamp and timescale metadata for MoQ.
+ * Low Overhead Container (LOC): codec bitstreams framed with per-frame timing
+ * carried as MOQ Object Properties, per draft-ietf-moq-loc-04.
+ *
+ * LOC has two property scopes and only one of them is ours to write. §6.1 puts
+ * the *Public* Properties — Timestamp (0x10), Timescale (0x08), VideoConfig
+ * (0x0D) — in the **MOQ Object Properties on the object header**, and leaves the
+ * object payload as the bare codec bitstream. The *Private* Properties block that
+ * rides inside the payload belongs to Secure Objects (§3.1.3), not to plain LOC.
+ *
+ * This module used to do the opposite: it wrote a length-prefixed property block
+ * into the payload and parsed one back out. Nothing that follows the draft could
+ * read it, and it double-stamped — moq-net already writes an object-header
+ * Timestamp for any frame carrying one, so the timestamp went on the wire twice
+ * and a conformant receiver read the header copy and then handed the leftover
+ * property block to its decoder as codec bytes.
+ *
+ * shaka-player (`lib/msf/loc_parser.js`) reads the header properties and passes
+ * the payload through untouched, and documents removing its own in-payload strip
+ * because such a block **cannot be distinguished from codec data**: the first byte
+ * of a stereo AAC-LC `raw_data_block` reads as a plausible property count, so
+ * stripping silently truncates good media. We follow it.
  *
  * @module
  */
@@ -10,7 +29,7 @@ import { Time } from "@moq/net";
 
 /** A decoded LOC frame: the codec bitstream plus its timing metadata. */
 export interface Frame {
-	/** The codec bitstream payload, with the LOC property block stripped. */
+	/** The codec bitstream payload, exactly as it arrived. */
 	payload: Uint8Array;
 	/** Presentation timestamp in microseconds. */
 	timestamp: Time.Micro;
@@ -18,76 +37,30 @@ export interface Frame {
 	keyframe: boolean;
 }
 
-const PROP_TIMESCALE = 0x08;
-const PROP_TIMESTAMP = 0x10;
-
-// The Timestamp id from draft-ietf-moq-loc-03, accepted on decode only. Draft-03's
-// body text and its IANA table disagreed (0x0A vs 0x06); this is the table's value,
-// which is what shipped. Draft-04 assigns 0x0A to Secure Objects private properties,
-// so it is not accepted here.
-const PROP_TIMESTAMP_DRAFT03 = 0x06;
-
-const DEFAULT_TIMESCALE = 1_000_000;
-
 /**
- * Decoder for the Low Overhead Container (LOC) defined in
- * draft-ietf-moq-loc-04.
+ * Decoder for LOC (draft-ietf-moq-loc-04).
  *
- * Each MoQ frame is a small property block (timestamp, optional per-frame
- * timescale) followed by the codec bitstream payload. Frames without a 0x08
- * timescale property are interpreted as microseconds.
+ * The timing is read from the object header, which moq-net has already decoded
+ * into {@link Moq.Frame.timestamp} — it accepts the registered Timestamp id 0x10
+ * and draft-02's 0x06, and honours an object-scope Timescale (0x08) as an
+ * override. The payload is returned unchanged.
  */
 export class Format {
-	/** Decode one moq-net frame into its LOC frames. Throws on malformed input. */
-	decode(frame: Uint8Array): Frame[] {
-		const [propsLen, afterLen] = Moq.Varint.decode(frame);
-		if (afterLen.byteLength < propsLen) {
-			throw new Error("loc: properties_length exceeds frame size");
-		}
-		const props = afterLen.subarray(0, propsLen);
-		const payload = afterLen.subarray(propsLen);
-
-		let timestamp: number | undefined;
-		let timescale: number | undefined;
-		let prevType = 0;
-		let first = true;
-		let cursor = props;
-
-		while (cursor.byteLength > 0) {
-			const [delta, afterDelta] = Moq.Varint.decode(cursor);
-			const abs = first ? delta : prevType + delta;
-			first = false;
-			prevType = abs;
-			cursor = afterDelta;
-
-			if (abs % 2 === 0) {
-				const [value, afterValue] = Moq.Varint.decode(cursor);
-				cursor = afterValue;
-				if (abs === PROP_TIMESTAMP || abs === PROP_TIMESTAMP_DRAFT03) {
-					timestamp = value;
-				} else if (abs === PROP_TIMESCALE) {
-					if (value === 0) {
-						throw new Error("loc: timescale property must be non-zero");
-					}
-					timescale = value;
-				}
-			} else {
-				const [len, afterLenInner] = Moq.Varint.decode(cursor);
-				if (afterLenInner.byteLength < len) {
-					throw new Error("loc: property length exceeds remaining bytes");
-				}
-				cursor = afterLenInner.subarray(len);
-			}
-		}
-
-		if (timestamp === undefined) {
-			throw new Error("loc: frame missing required timestamp property");
-		}
-
-		const activeTimescale = timescale ?? DEFAULT_TIMESCALE;
-		const micros = Math.round((timestamp * DEFAULT_TIMESCALE) / activeTimescale) as Time.Micro;
-
-		return [{ payload, timestamp: micros, keyframe: false }];
+	/** Decode one moq-net frame into its LOC frames. */
+	decode(frame: Moq.Group.Frame): Frame[] {
+		// NOTE: this cannot detect an object that carried no Timestamp at all.
+		// moq-net's IETF subscriber substitutes `Timestamp.now()` for a missing one
+		// (`ietf/subscriber.ts`), so by the time a frame reaches here the timing is
+		// always present and may be wall-clock rather than media time. shaka-player
+		// instead falls back to `group x frameDuration` from the catalog, which is
+		// the better behaviour and needs the group number plumbed through to here.
+		return [
+			{
+				payload: frame.payload,
+				timestamp: frame.timestamp.asMicros() as Time.Micro,
+				keyframe: false,
+			},
+		];
 	}
 }
 
@@ -100,11 +73,16 @@ export interface Source {
 }
 
 /**
- * Encoder that packages frames as LOC and writes them to a moq-net track.
+ * Encoder that writes frames to a moq-net track as LOC.
  *
- * Each call to {@link encode} produces one moq-net frame containing a
- * property block with the 0x10 timestamp (in microseconds) and the codec
- * bitstream payload.
+ * The payload written is the bare codec bitstream; the Timestamp rides the object
+ * header, written by moq-net from the frame's timestamp.
+ *
+ * **The track must declare a microsecond timescale.** moq-net converts a frame's
+ * timestamp into the *track's* timescale before writing the property and does not
+ * write a Timescale of its own, so a track left on the default of milliseconds
+ * puts a millisecond count on the wire under an id that means microseconds. Pass
+ * `{ timescale: Time.Timescale.MICRO }` to `accept()`; {@link Producer} asserts it.
  */
 export class Producer {
 	#track: Moq.Track.Producer;
@@ -124,38 +102,9 @@ export class Producer {
 		}
 
 		this.#group?.writeFrame({
-			payload: this.#encode(data, timestamp),
+			payload: data instanceof Uint8Array ? data : copy(data),
 			timestamp: Time.Timestamp.fromMicros(timestamp),
 		});
-	}
-
-	#encode(source: Uint8Array | Source, timestamp: Time.Micro): Uint8Array {
-		const propTypeBytes = Moq.Varint.encode(PROP_TIMESTAMP);
-		const propValueBytes = Moq.Varint.encode(timestamp);
-		const propsLen = propTypeBytes.byteLength + propValueBytes.byteLength;
-
-		const propsLenBytes = Moq.Varint.encode(propsLen);
-
-		const payloadSize = source.byteLength;
-		const total = propsLenBytes.byteLength + propsLen + payloadSize;
-		const out = new Uint8Array(total);
-
-		let offset = 0;
-		out.set(propsLenBytes, offset);
-		offset += propsLenBytes.byteLength;
-		out.set(propTypeBytes, offset);
-		offset += propTypeBytes.byteLength;
-		out.set(propValueBytes, offset);
-		offset += propValueBytes.byteLength;
-
-		const payloadView = out.subarray(offset);
-		if (source instanceof Uint8Array) {
-			payloadView.set(source);
-		} else {
-			source.copyTo(payloadView);
-		}
-
-		return out;
 	}
 
 	/** Close the current group and the underlying track, optionally with an error. */
@@ -163,4 +112,10 @@ export class Producer {
 		this.#group?.close();
 		this.#track.close(err);
 	}
+}
+
+function copy(source: Source): Uint8Array {
+	const out = new Uint8Array(source.byteLength);
+	source.copyTo(out);
+	return out;
 }

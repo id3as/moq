@@ -15,8 +15,10 @@ export class Format implements ContainerFormat {
 	}
 
 	/** Decode one legacy frame, including an empty-payload endpoint marker. */
-	decode(frame: Uint8Array): Frame[] {
-		const [timestamp, data] = Moq.Varint.decode(frame);
+	decode(frame: Moq.Group.Frame): Frame[] {
+		// The legacy container carries its own in-payload timestamp varint, so the
+		// object-header one on `frame` is ignored here by design.
+		const [timestamp, data] = Moq.Varint.decode(frame.payload);
 		return [{ payload: data, timestamp: timestamp as Time.Micro, keyframe: false }];
 	}
 }
