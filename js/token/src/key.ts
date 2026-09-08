@@ -1,5 +1,5 @@
 import * as base64 from "@hexagon/base64";
-import * as z from "@zod/mini";
+import * as z from "zod/mini";
 import * as jose from "jose";
 import { type Algorithm, AlgorithmSchema } from "./algorithm.ts";
 import { type Claims, ClaimsSchema, ScopeSchema, scopeAllows } from "./claims.ts";
