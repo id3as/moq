@@ -20,6 +20,8 @@ interface Group {
 	empty: boolean; // no wire frame was published, which declares a discontinuity
 	latest?: Time.Micro; // The timestamp of the latest known frame
 	end?: Time.Micro; // The furthest presentation point so far, i.e. max(timestamp + duration)
+	previous?: Time.Micro; // The timestamp of the frame before, so the interval between frames can be measured
+	interval?: Time.Micro; // The smallest positive gap between consecutive frames: the frame duration, inferred
 	done?: boolean; // Set when #runGroup finishes reading all frames
 }
 
@@ -225,7 +227,8 @@ export class Consumer {
 						// Carry the container's per-sample duration through so group.end is the real
 						// presentation end (ts + duration), not just the last frame's ts. This is what
 						// makes the PTS-contiguity check (next.firstPTS <= group.end) work; without it a
-						// contiguous next group looks one frame past the end. Undefined for Legacy (no duration).
+						// contiguous next group looks one frame past the end. Undefined for Legacy and LOC
+						// (no duration on the wire), where the group infers it from its frame spacing below.
 						duration: sample.duration,
 					};
 
@@ -237,9 +240,33 @@ export class Consumer {
 						group.latest = frame.timestamp;
 					}
 
-					const end = (frame.timestamp + (frame.duration ?? 0)) as Time.Micro;
-					if (group.end === undefined || end > group.end) {
-						group.end = end;
+					if (frame.duration !== undefined) {
+						const end = (frame.timestamp + frame.duration) as Time.Micro;
+						if (group.end === undefined || end > group.end) {
+							group.end = end;
+						}
+					} else {
+						// No duration on the wire, so infer the frame interval from the group's own
+						// spacing: the smallest positive gap between consecutive frames. Timestamps are
+						// integer microseconds, so an AAC frame (1024 samples at 48kHz, 21333.3µs) shows
+						// up as 21333 or 21334, a µs of noise ptsContiguous's tolerance absorbs. B-frames
+						// arrive out of presentation order (I P B B), and the smallest gap among those
+						// is still one frame. The end is then the latest frame plus one interval: what
+						// the next group's first PTS meets when nothing is missing, which is the only way
+						// a publisher whose group ids are not +1 (Norsk numbers them by PTS) can prove
+						// continuity. A single-frame group has no spacing, so its end stays unknown.
+						if (!marker && group.previous !== undefined) {
+							const gap = Math.abs(frame.timestamp - group.previous) as Time.Micro;
+							if (gap > 0 && (group.interval === undefined || gap < group.interval)) {
+								group.interval = gap;
+							}
+						}
+						if (!marker) group.previous = frame.timestamp;
+						if (group.latest !== undefined && group.interval !== undefined) {
+							group.end = (group.latest + group.interval) as Time.Micro;
+						} else if (group.end === undefined || frame.timestamp > group.end) {
+							group.end = frame.timestamp;
+						}
 					}
 
 					this.#updateBuffered();
