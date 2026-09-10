@@ -1472,6 +1472,92 @@ test("Frame object time: draft-16 starts delta property types", async () => {
 	expect(decoded.timestamp?.scale).toBe(Timescale.MILLI);
 });
 
+// LOC-04 lets an object carry its own Timescale (0x08) next to its Timestamp (0x10), and a
+// publisher on a draft that registered no TIMESCALE track property (Norsk on draft-16) has no
+// other way to state its units. Such an object is self-describing: its timing must be read even
+// though the track declared no timescale, instead of being stamped on arrival.
+test("Frame object time: an object-scope Timescale opts the object into timestamps without a track one", async () => {
+	const flags: GroupFlags = {
+		hasExtensions: true,
+		hasSubgroup: false,
+		hasSubgroupObject: false,
+		hasEnd: true,
+		hasPriority: true,
+		firstObject: true,
+	};
+	// Draft-16 delta property types, ascending: TIMESCALE (0x08) then TIMESTAMP (0x08 + 0x08).
+	const encoded = new Uint8Array([
+		0x00, // object id delta
+		0x0a, // properties length
+		0x08, // TIMESCALE
+		0x80,
+		0x0f,
+		0x42,
+		0x40, // 1_000_000 as a four byte varint
+		0x08, // +0x08 = TIMESTAMP
+		0x85,
+		0xb8,
+		0xd8,
+		0x00, // 96_000_000 as a four byte varint
+		0x01, // payload length
+		0xaa,
+	]);
+
+	const decoded = await Frame.decode(
+		new Reader(undefined, encoded, Version.DRAFT_16),
+		flags,
+		undefined,
+		Version.DRAFT_16,
+	);
+	expect(decoded.timestamp?.value).toBe(96_000_000);
+	expect(decoded.timestamp?.scale).toBe(Timescale(1_000_000));
+	expect(Array.from(decoded.payload ?? [])).toEqual([0xaa]);
+
+	// With a track timescale the object's own still overrides it for this object.
+	const overridden = await Frame.decode(
+		new Reader(undefined, encoded, Version.DRAFT_16),
+		flags,
+		Timescale.MILLI,
+		Version.DRAFT_16,
+	);
+	expect(overridden.timestamp?.value).toBe(96_000_000);
+	expect(overridden.timestamp?.scale).toBe(Timescale(1_000_000));
+});
+
+// A Timestamp with no units anywhere -- neither a track TIMESCALE nor an object one -- cannot
+// be interpreted, so the object stays timestamp-less and its consumer stamps it on arrival,
+// exactly as before. No guessing at units.
+test("Frame object time: a Timestamp with no Timescale on the track or the object is not interpreted", async () => {
+	const flags: GroupFlags = {
+		hasExtensions: true,
+		hasSubgroup: false,
+		hasSubgroupObject: false,
+		hasEnd: true,
+		hasPriority: true,
+		firstObject: true,
+	};
+	const encoded = new Uint8Array([
+		0x00, // object id delta
+		0x05, // properties length
+		0x10, // TIMESTAMP
+		0x85,
+		0xb8,
+		0xd8,
+		0x00, // 96_000_000
+		0x01, // payload length
+		0xaa,
+	]);
+
+	const decoded = await Frame.decode(
+		new Reader(undefined, encoded, Version.DRAFT_16),
+		flags,
+		undefined,
+		Version.DRAFT_16,
+	);
+	expect(decoded.timestamp).toBeUndefined();
+	expect(Array.from(decoded.payload ?? [])).toEqual([0xaa]);
+});
+
 // A fetch stream's first object is the only one carrying absolute ids, so a wrong flag byte
 // there silently renumbers every object after it. This codec is the sole serialization path
 // for a served fill.

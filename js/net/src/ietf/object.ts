@@ -101,7 +101,7 @@ async function encodeObjectExtensions(
 
 async function decodeObjectTime(
 	r: Reader,
-	timescale: Timescale,
+	timescale: Timescale | undefined,
 	version: IetfVersion | undefined,
 ): Promise<Timestamp | undefined> {
 	let timestamp: bigint | undefined;
@@ -132,8 +132,16 @@ async function decodeObjectTime(
 		return undefined;
 	}
 
-	// An object-scope Timescale (which LOC permits) overrides the track's for this object.
-	return new Timestamp(Number(timestamp), overrideScale !== undefined ? Timescale(Number(overrideScale)) : timescale);
+	// An object-scope Timescale (which LOC permits) overrides the track's for this object, and
+	// on a track that declared none it is the only statement of the units there is: a
+	// publisher on a draft with no TIMESCALE track property (Norsk on draft-16) can say
+	// nothing else. A Timestamp with no units anywhere cannot be interpreted; guessing them
+	// would be worse than the arrival stamp the caller falls back to.
+	const scale = overrideScale !== undefined ? Timescale(Number(overrideScale)) : timescale;
+	if (scale === undefined) {
+		return undefined;
+	}
+	return new Timestamp(Number(timestamp), scale);
 }
 
 export interface GroupFlags {
@@ -318,11 +326,9 @@ export class Frame {
 		if (flags.hasExtensions) {
 			const extensionsLength = await r.u53();
 			const extensions = await r.read(extensionsLength);
-			// A track that declared no timescale opted out of timestamps, so its objects
-			// are stamped on arrival even if one carries a Timestamp we cannot interpret.
-			if (timescale !== undefined) {
-				timestamp = await decodeObjectTime(new Reader(undefined, extensions, version), timescale, version);
-			}
+			// The track's TIMESCALE gives the units, or the object's own does; an object with
+			// neither is stamped on arrival by the caller, even if it carries a Timestamp.
+			timestamp = await decodeObjectTime(new Reader(undefined, extensions, version), timescale, version);
 		}
 
 		const payloadLength = await r.u53();
