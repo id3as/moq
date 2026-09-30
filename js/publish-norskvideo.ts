@@ -128,7 +128,7 @@ for (const dir of FORKED) {
 	// A version the registry already has (an earlier run that stopped part way)
 	// is skipped, so a re-run finishes the set rather than failing at the first.
 	if (doPublish && published(pkg.name, VERSION)) {
-		console.log(`   ${pkg.name}@${VERSION} is on the registry already — skipped`);
+		console.log(`   ${pkg.name}@${VERSION} is on the registry already, skipped`);
 		continue;
 	}
 	execFileSync("npm", npmArgs, { cwd: distDir, stdio: "inherit" });
