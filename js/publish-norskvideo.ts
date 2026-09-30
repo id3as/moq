@@ -84,6 +84,16 @@ for (const dir of FORKED) {
 
 // ── phase 2: rewrite each dist/ to @norskvideo, then publish ─────────
 console.log(`\n── ${doPublish ? "publishing" : "DRY RUN (npm pack)"} @ ${VERSION} ──`);
+// The scope needs an OTP, which is short-lived: ask for it here, after the
+// builds, unless --otp gave one. A code should cover the 8 publishes in a row.
+let otp = OTP;
+if (doPublish && !otp) {
+	otp = prompt("npm OTP for the @norskvideo scope:")?.trim() || undefined;
+	if (!otp) {
+		console.error("no OTP: nothing published");
+		process.exit(1);
+	}
+}
 for (const dir of FORKED) {
 	const distDir = join(JS_DIR, dir, "dist");
 	const pkgPath = join(distDir, "package.json");
@@ -114,8 +124,25 @@ for (const dir of FORKED) {
 
 	console.log(`\n▶ ${doPublish ? "publish" : "pack"} ${pkg.name}@${VERSION}`);
 	const npmArgs = doPublish ? ["publish", "--access", "public"] : ["pack", "--dry-run"];
-	if (doPublish && OTP) npmArgs.push("--otp", OTP);
+	if (doPublish && otp) npmArgs.push("--otp", otp);
+	// A version the registry already has (an earlier run that stopped part way)
+	// is skipped, so a re-run finishes the set rather than failing at the first.
+	if (doPublish && published(pkg.name, VERSION)) {
+		console.log(`   ${pkg.name}@${VERSION} is on the registry already — skipped`);
+		continue;
+	}
 	execFileSync("npm", npmArgs, { cwd: distDir, stdio: "inherit" });
+}
+
+function published(name: string, version: string): boolean {
+	try {
+		const out = execFileSync("npm", ["view", `${name}@${version}`, "version"], {
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		return out.toString().trim() === version;
+	} catch {
+		return false;
+	}
 }
 
 console.log(`\n✅ ${doPublish ? "Published" : "Dry-ran"} ${FORKED.length} packages @ ${VERSION}`);
