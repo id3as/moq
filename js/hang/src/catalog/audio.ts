@@ -50,6 +50,9 @@ export const AudioConfigSchema = z.object({
 	// ex: AAC often uses 1024 samples per frame, so at 44100Hz, this would be 1024/44100 = 23ms
 	jitter: z.optional(u53Schema),
 
+	// The language of the audio, an RFC 5646 tag (MSF "lang"), for a player to choose by.
+	language: z.optional(z.string()),
+
 	// The companion timeline track indexing this rendition's groups, if the publisher offers one.
 	timeline: z.optional(TimelineSchema),
 });

@@ -85,6 +85,7 @@ function toAudioConfig(track: Msf.Track): Catalog.AudioConfig | undefined {
 		numberOfChannels: u53(channels),
 		bitrate: track.bitrate != null ? u53(track.bitrate) : undefined,
 		jitter: track.jitter != null ? u53(track.jitter) : undefined,
+		language: track.lang,
 	};
 }
 

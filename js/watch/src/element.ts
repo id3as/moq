@@ -96,6 +96,9 @@ export default class MoqWatch extends HTMLElement {
 		latency: new Signal<Latency>("real-time"),
 		// The desired video rendition (resolution/bitrate cap).
 		target: new Signal<Video.Target | undefined>(undefined),
+		// The desired audio rendition, by track name — a player choosing one sound
+		// among several (a language, say). Unset, the first playable is taken.
+		audioTarget: new Signal<Audio.Target | undefined>(undefined),
 	};
 
 	// Broadcast configuration owned here and wired into `broadcast` as inputs.
@@ -164,6 +167,7 @@ export default class MoqWatch extends HTMLElement {
 		});
 		const audioSource = new Audio.Source({
 			broadcast: this.broadcast,
+			target: this.controls.audioTarget,
 			supported: Audio.Decoder.supported,
 		});
 		this.signals.cleanup(() => {
