@@ -8,7 +8,7 @@
 import type * as Catalog from "@moq/hang/catalog";
 import type { Time } from "@moq/net";
 import * as Moq from "@moq/net";
-import { Effect, Signal } from "@moq/signals";
+import { Effect, Signal, Computed } from "@moq/signals";
 import type * as Audio from "./audio";
 import { type Broadcast, CATALOG_FORMATS, type CatalogFormat } from "./broadcast";
 import { formatDuration, parseDuration } from "./duration";
@@ -100,9 +100,14 @@ export default class MoqWatch extends HTMLElement {
 	// The connection to the moq-relay server.
 	/**
 	 * The relay connection, shared with every other element on the page pointing at the
-	 * same URL. Its `origin` is where the broadcasts live.
+	 * same URL. Its `origin` is where the broadcasts live. Replaced by {@link connectionProps}.
 	 */
-	connection: Moq.Connection;
+	get connection(): Moq.Connection {
+		return this.#connection.peek();
+	}
+	#connection: Signal<Moq.Connection>;
+	// The URL, one signal for every connection this element builds, so a rebuild keeps it.
+	#url = new Signal<URL | undefined>(undefined);
 
 	/** Headless playback pipeline behind this element. */
 	readonly player: Player;
@@ -186,14 +191,18 @@ export default class MoqWatch extends HTMLElement {
 
 		cleanup.register(this, this.signals);
 
-		this.connection = new Moq.Connection({
-			enabled: this.#enabled,
-		});
+		this.#connection = new Signal(
+			new Moq.Connection({
+				url: this.#url,
+				enabled: this.#enabled,
+			}),
+		);
 		this.signals.cleanup(() => this.connection.close());
 
 		this.player = new Player({
-			origin: this.connection.origin,
-			probe: this.connection.probe,
+			// through the signal, so a connection rebuilt by `connectionProps` is the one played
+			origin: new Computed((effect) => effect.get(effect.get(this.#connection).origin)),
+			probe: new Computed((effect) => effect.get(effect.get(this.#connection).probe)),
 			enabled: this.#enabled,
 			name: this.#name,
 			announced: this.#announced,
@@ -253,7 +262,7 @@ export default class MoqWatch extends HTMLElement {
 		// NOTE: This only runs when the element is connected to the DOM, which is not obvious.
 		// This is because there's no destructor for web components to clean up our effects.
 		this.signals.run((effect) => {
-			const url = effect.get(this.connection.url);
+			const url = effect.get(this.#url);
 			if (url) {
 				this.setAttribute("url", url.toString());
 			} else {
@@ -363,7 +372,7 @@ export default class MoqWatch extends HTMLElement {
 		}
 
 		if (name === "url") {
-			this.connection.url.set(newValue ? new URL(newValue) : undefined);
+			this.#url.set(newValue ? new URL(newValue) : undefined);
 		} else if (name === "name") {
 			this.#name.set(Moq.Path.from(newValue ?? ""));
 		} else if (name === "paused") {
@@ -397,11 +406,23 @@ export default class MoqWatch extends HTMLElement {
 	}
 
 	get url(): URL | undefined {
-		return this.connection.url.peek();
+		return this.#url.peek();
 	}
 
 	set url(value: string | URL | undefined) {
-		this.connection.url.set(value ? new URL(value) : undefined);
+		this.#url.set(value ? new URL(value) : undefined);
+	}
+
+	/**
+	 * Rebuild the connection with these options, for a relay the shared pool cannot reach on
+	 * its own: a self-signed certificate pinned with `webtransport.serverCertificateHashes`,
+	 * no WebSocket fallback, no discovery. The URL and the enabled state carry over, and the
+	 * player follows the new connection. Set it before the URL to spare a wasted attempt.
+	 */
+	set connectionProps(props: Omit<Moq.Connection.Props, "url" | "enabled">) {
+		const prev = this.#connection.peek();
+		this.#connection.set(new Moq.Connection({ ...props, url: this.#url, enabled: this.#enabled }));
+		prev.close();
 	}
 
 	get name(): Moq.Path.Valid {
