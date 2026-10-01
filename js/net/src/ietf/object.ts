@@ -99,7 +99,7 @@ async function encodeObjectExtensions(
 	return result;
 }
 
-function decodeObjectTime(c: Cursor, timescale: Timescale): Timestamp | undefined {
+function decodeObjectTime(c: Cursor, timescale: Timescale | undefined): Timestamp | undefined {
 	let timestamp: bigint | undefined;
 	let overrideScale: bigint | undefined;
 	let prevType = 0n;
@@ -127,8 +127,16 @@ function decodeObjectTime(c: Cursor, timescale: Timescale): Timestamp | undefine
 		return undefined;
 	}
 
-	// An object-scope Timescale (which LOC permits) overrides the track's for this object.
-	return new Timestamp(Number(timestamp), overrideScale !== undefined ? Timescale(Number(overrideScale)) : timescale);
+	// An object-scope Timescale (which LOC permits) overrides the track's for this object, and
+	// on a track that declared none it is the only statement of the units there is: a
+	// publisher on a draft with no TIMESCALE track property (Norsk on draft-16) can say
+	// nothing else. A Timestamp with no units anywhere cannot be interpreted; guessing them
+	// would be worse than the arrival stamp the caller falls back to.
+	const scale = overrideScale !== undefined ? Timescale(Number(overrideScale)) : timescale;
+	if (scale === undefined) {
+		return undefined;
+	}
+	return new Timestamp(Number(timestamp), scale);
 }
 
 export interface GroupFlags {
@@ -323,13 +331,9 @@ export class Frame {
 			if (extensionsLength > MAX_OBJECT_EXTENSIONS) {
 				throw new StreamError(StreamCode.MalformedTrack, { message: "object extensions exceed 64 KiB" });
 			}
-			// A track that declared no timescale opted out of timestamps, so its objects
-			// are stamped on arrival even if one carries a Timestamp we cannot interpret.
-			if (timescale !== undefined) {
-				timestamp = c.exact(extensionsLength, (e) => decodeObjectTime(e, timescale));
-			} else {
-				c.read(extensionsLength);
-			}
+			// The track's TIMESCALE gives the units, or the object's own does; an object with
+			// neither is stamped on arrival by the caller, even if it carries a Timestamp.
+			timestamp = c.exact(extensionsLength, (e) => decodeObjectTime(e, timescale));
 		}
 
 		const payloadLength = c.u53();
