@@ -1666,3 +1666,106 @@ test("LegacyFormat rejects a timestamp past 2^53 - 1 instead of rounding", () =>
 	const frame = Varint.encode(2n ** 53n + 1n);
 	expect(() => new LegacyFormat("video").decode(wire(frame))).toThrow(/larger than 53-bits/);
 });
+
+// --- Duration-less containers with PTS-derived group ids (LOC as Norsk publishes it) ---
+
+// Norsk numbers a group by its first PTS in microseconds (moq_broadcast.erl pts_to_group_id) and
+// publishes LOC, whose frames carry a timestamp but no duration. Neither proof `continues` accepts is
+// available then: the ids are not +1, and without durations the previous group's end is unknown. Yet
+// nothing is missing: every group's first frame sits exactly one frame interval after the last frame
+// of the group before it. The consumer must keep delivering. Parking on a seq+1 phantom instead stalls
+// the next group until the one after it arrives, when the latency check throws it away whole -- every
+// other group dropped ("skipping slow group", seen on the norsk-probe preview, 2026-09-10).
+
+const PTS_FRAME = 40_000 as Time.Micro; // 25 fps
+const PTS_GOP = 3; // frames per group in these tests
+
+/** A group numbered by its first PTS, its frames one interval apart, exactly as Norsk's LOC egest. */
+function ptsGroup(first: number): { sequence: number; timestamps: Time.Micro[] } {
+	return {
+		sequence: first,
+		timestamps: Array.from({ length: PTS_GOP }, (_, i) => (first + i * PTS_FRAME) as Time.Micro),
+	};
+}
+
+test("Consumer delivers every duration-less group whose ids are PTS-derived (LOC-shaped)", async () => {
+	const track = new Track.Producer("test");
+	// A budget no test span can exceed, so a stall is the only way to lose frames here.
+	const consumer = new Consumer(replay(track), { format: new LegacyFormat("data"), maxAge: 10_000 as Time.Milli });
+
+	const groups = [ptsGroup(123_715_000), ptsGroup(123_835_000), ptsGroup(123_955_000)];
+	for (const g of groups) writeGroupWithLegacyFrames(track, g.sequence, g.timestamps);
+	track.close();
+
+	const frames = await drainFrames(consumer, 200);
+	expect(frames.map((f) => f.timestamp)).toEqual(groups.flatMap((g) => g.timestamps));
+	expect(frames.map((f) => f.group)).toEqual(groups.flatMap((g) => g.timestamps.map(() => g.sequence)));
+	consumer.close();
+});
+
+test("Consumer promotes a duration-less PTS-numbered group that opened while the previous was live", async () => {
+	const track = new Track.Producer("test");
+	const consumer = new Consumer(replay(track), { format: new LegacyFormat("data"), maxAge: 10_000 as Time.Milli });
+
+	// A is open and fully delivered; B opens with its first frame one interval after A's last, as a live
+	// encoder does, before A's stream ends. A has presented up to where B begins, so B's frame must
+	// surface at once rather than wait on A's FIN (and the cursor moving past A that way emits no marker).
+	const a = ptsGroup(123_715_000);
+	const ga = new Group.Producer(a.sequence);
+	track.writeGroup(ga);
+	for (const ts of a.timestamps) ga.writeFrame({ payload: encodeLegacy(ts), timestamp: Time.Timestamp.now() });
+	for (const ts of a.timestamps) expect((await consumer.next())?.frame?.timestamp).toBe(ts);
+
+	const b = ptsGroup(123_835_000);
+	const gb = new Group.Producer(b.sequence);
+	track.writeGroup(gb);
+	gb.writeFrame({ payload: encodeLegacy(b.timestamps[0]), timestamp: Time.Timestamp.now() });
+	await settle();
+
+	const result = await Promise.race([consumer.next(), settle(300).then(() => "timeout" as const)]);
+	expect(result).not.toBe("timeout");
+	const delivered = result as { frame?: Frame; continuous?: boolean } | undefined;
+	expect(delivered?.frame?.timestamp).toBe(b.timestamps[0]);
+	expect(delivered?.continuous).toBe(true);
+
+	ga.close();
+	consumer.close();
+});
+
+test("Consumer does not latency-skip a duration-less PTS-numbered group that merely followed its predecessor", async () => {
+	const warn = spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		const track = new Track.Producer("test");
+		const consumer = new Consumer(replay(track), { format: new LegacyFormat("data"), maxAge: 100 as Time.Milli });
+
+		// A delivered to its done marker before B exists, so the cursor has to find B on its own.
+		const a = ptsGroup(123_715_000);
+		writeGroupWithLegacyFrames(track, a.sequence, a.timestamps);
+		for (const ts of a.timestamps) expect((await consumer.next())?.frame?.timestamp).toBe(ts);
+		expect((await consumer.next())?.frame).toBeUndefined();
+		// The decoder always has a next() in flight, so promotion gets its chance the moment B lands.
+		const pending = consumer.next();
+
+		// B arrives complete and contiguous. Then C opens: B's span plus C's first frame (120ms) is past
+		// the 100ms budget, so if B is still waiting to be promoted it is the one the budget discards.
+		const b = ptsGroup(123_835_000);
+		writeGroupWithLegacyFrames(track, b.sequence, b.timestamps);
+		await settle();
+		const c = ptsGroup(123_955_000);
+		const gc = new Group.Producer(c.sequence);
+		track.writeGroup(gc);
+		gc.writeFrame({ payload: encodeLegacy(c.timestamps[0]), timestamp: Time.Timestamp.now() });
+		await settle();
+
+		const result = await Promise.race([pending, settle(300).then(() => "timeout" as const)]);
+		expect(result).not.toBe("timeout");
+		const delivered = result as { frame?: Frame; continuous?: boolean } | undefined;
+		expect(delivered?.frame?.timestamp).toBe(b.timestamps[0]);
+		expect(delivered?.continuous).toBe(true);
+		expect(warn.mock.calls.filter((call) => String(call[0]).includes("skipping slow group"))).toHaveLength(0);
+
+		consumer.close();
+	} finally {
+		warn.mockRestore();
+	}
+});
