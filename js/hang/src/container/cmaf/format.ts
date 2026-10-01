@@ -1,3 +1,4 @@
+import type * as Moq from "@moq/net";
 import type { Time } from "@moq/net";
 import type { Format as ContainerFormat } from "../format";
 import type { Frame } from "../types";
@@ -13,8 +14,9 @@ export class Format implements ContainerFormat {
 	}
 
 	/** Decode one CMAF fragment into its media frames. */
-	decode(frame: Uint8Array): Frame[] {
-		return decodeDataSegment(frame, this.#init).map((s) => ({
+	decode(frame: Moq.Group.Frame): Frame[] {
+		// CMAF timing comes from the moof, so the object-header timestamp is not used.
+		return decodeDataSegment(frame.payload, this.#init).map((s) => ({
 			payload: s.data,
 			timestamp: s.timestamp as Time.Micro,
 			keyframe: s.keyframe,

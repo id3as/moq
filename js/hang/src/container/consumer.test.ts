@@ -10,6 +10,15 @@ import type { Format as ContainerFormat } from "./format.ts";
 import { Format as LegacyFormat, Producer as LegacyProducer } from "./legacy.ts";
 import type { Frame } from "./types.ts";
 
+/**
+ * Wrap raw container bytes as the moq-net frame a Format receives. The
+ * object-header timestamp only matters to LOC; every format exercised here
+ * carries its own timing, so a zero is fine.
+ */
+function wire(payload: Uint8Array): Group.Frame {
+	return { payload, timestamp: Time.Timestamp.fromMicros(0) };
+}
+
 const TIMESCALE = 90_000;
 const TEST_INIT: InitSegment = {
 	timescale: TIMESCALE,
@@ -61,7 +70,7 @@ test("LegacyFormat decodes a valid frame", () => {
 	const timestamp = 1000 as Time.Micro;
 	const frame = encodeLegacyFrame(timestamp, payload);
 
-	const result = format.decode(frame);
+	const result = format.decode(wire(frame));
 
 	expect(result).toHaveLength(1);
 	expect(result[0].timestamp).toBe(timestamp);
@@ -73,7 +82,7 @@ test("LegacyFormat preserves a duration marker", () => {
 	const format = new LegacyFormat("video");
 	const frame = encodeLegacyFrame(1000 as Time.Micro, new Uint8Array());
 
-	const [marker] = format.decode(frame);
+	const [marker] = format.decode(wire(frame));
 	expect(marker.timestamp).toBe(1000 as Time.Micro);
 	expect(marker.payload).toHaveLength(0);
 	expect(format.end(marker)).toBe(1000 as Time.Micro);
@@ -83,7 +92,7 @@ test("LegacyFormat always returns keyframe: false", () => {
 	const format = new LegacyFormat("data");
 	const frame = encodeLegacyFrame(0 as Time.Micro, new Uint8Array([0x01]));
 
-	const [decoded] = format.decode(frame);
+	const [decoded] = format.decode(wire(frame));
 	expect(decoded.keyframe).toBe(false);
 });
 
@@ -91,13 +100,13 @@ test("LegacyFormat always returns exactly one frame", () => {
 	const format = new LegacyFormat("data");
 	const frame = encodeLegacyFrame(5000 as Time.Micro, new Uint8Array([0x01, 0x02, 0x03]));
 
-	const result = format.decode(frame);
+	const result = format.decode(wire(frame));
 	expect(result).toHaveLength(1);
 });
 
 test("LegacyFormat throws on empty input", () => {
 	const format = new LegacyFormat("data");
-	expect(() => format.decode(new Uint8Array(0))).toThrow();
+	expect(() => format.decode(wire(new Uint8Array(0)))).toThrow();
 });
 
 test("Legacy Producer refuses a group below the live edge", () => {
@@ -314,7 +323,7 @@ test("Legacy Producer cut keeps pre-pause media from reading as live", async () 
 test("LegacyFormat throws on truncated input", () => {
 	const format = new LegacyFormat("data");
 	// A varint that indicates more bytes follow but is truncated
-	expect(() => format.decode(new Uint8Array([0x80]))).toThrow();
+	expect(() => format.decode(wire(new Uint8Array([0x80])))).toThrow();
 });
 
 // --- CmafFormat ---
@@ -330,7 +339,7 @@ test("CmafFormat decodes a valid keyframe segment", () => {
 		sequence: 0,
 	});
 
-	const result = format.decode(segment);
+	const result = format.decode(wire(segment));
 
 	expect(result).toHaveLength(1);
 	expect(result[0].payload).toEqual(new Uint8Array([0xca, 0xfe]));
@@ -360,7 +369,7 @@ test("CmafFormat never reports an audio keyframe", () => {
 		sequence: 0,
 	});
 
-	const result = format.decode(segment);
+	const result = format.decode(wire(segment));
 	expect(result).toHaveLength(1);
 	expect(result[0].keyframe).toBe(false);
 });
@@ -390,7 +399,7 @@ test("CmafFormat decodes a delta frame segment", () => {
 		sequence: 1,
 	});
 
-	const result = format.decode(segment);
+	const result = format.decode(wire(segment));
 
 	expect(result).toHaveLength(1);
 	expect(result[0].keyframe).toBe(false);
@@ -408,13 +417,13 @@ test("CmafFormat converts timescale units to microseconds", () => {
 		sequence: 0,
 	});
 
-	const result = format.decode(segment);
+	const result = format.decode(wire(segment));
 	expect(result[0].timestamp).toBe(1_000_000 as Time.Micro);
 });
 
 test("CmafFormat throws on corrupt segment", () => {
 	const format = new CmafFormat(TEST_INIT);
-	expect(() => format.decode(new Uint8Array([0x00, 0x01, 0x02]))).toThrow();
+	expect(() => format.decode(wire(new Uint8Array([0x00, 0x01, 0x02])))).toThrow();
 });
 
 // --- Consumer ---
@@ -495,7 +504,7 @@ test("Consumer forces keyframe true at index 0", async () => {
 test("Consumer index spans MoQ frames for keyframe detection", async () => {
 	// Custom format that returns 3 samples per MoQ frame, all keyframe: false
 	const multiFormat: ContainerFormat = {
-		decode(_frame: Uint8Array): Frame[] {
+		decode(_frame: Group.Frame): Frame[] {
 			return [
 				{ payload: new Uint8Array([1]), timestamp: 0 as Time.Micro, keyframe: false },
 				{ payload: new Uint8Array([2]), timestamp: 33_000 as Time.Micro, keyframe: false },
@@ -526,7 +535,7 @@ test("Consumer keeps frames decoded before an error (truncated GoP)", async () =
 	// RESET or corrupt frame mid-group. Encoding the trigger in the frame bytes
 	// keeps this deterministic when groups decode in parallel.
 	const truncatingFormat: ContainerFormat = {
-		decode(frame: Uint8Array): Frame[] {
+		decode({ payload: frame }: Group.Frame): Frame[] {
 			if (frame[0] === 0xff) throw new Error("truncated");
 			return [{ payload: frame, timestamp: frame[0] as Time.Micro, keyframe: false }];
 		},
@@ -898,7 +907,7 @@ test("Consumer recovers from gap in group sequence numbers", async () => {
 test("Consumer handles empty decode result without deadlock", async () => {
 	let callCount = 0;
 	const emptyThenValid: ContainerFormat = {
-		decode(_frame: Uint8Array): Frame[] {
+		decode(_frame: Group.Frame): Frame[] {
 			callCount++;
 			if (callCount === 1) return []; // empty result
 			return [{ payload: new Uint8Array([1]), timestamp: 33_000 as Time.Micro, keyframe: false }];
@@ -1000,7 +1009,7 @@ test("CmafFormat decodes the per-sample duration", () => {
 		sequence: 0,
 	});
 
-	const [frame] = format.decode(segment);
+	const [frame] = format.decode(wire(segment));
 	// 3000 ticks / 90000 timescale * 1_000_000 = 33333µs
 	expect(frame.duration).toBe(33_333 as Time.Micro);
 });
@@ -1009,7 +1018,7 @@ test("CmafFormat decodes the per-sample duration", () => {
 
 // Format whose frames carry a fixed 33ms duration; the timestamp is byte 0 (ms).
 const durationFormat: ContainerFormat = {
-	decode(frame: Uint8Array): Frame[] {
+	decode({ payload: frame }: Group.Frame): Frame[] {
 		return [
 			{
 				payload: frame,
@@ -1048,7 +1057,7 @@ test("Consumer duration-skips a stalled group once it is covered", async () => {
 test("Consumer does not duration-skip when the gap is not covered", async () => {
 	// Format whose frames last only 10ms, short of the 33ms gap to the next group.
 	const shortFormat: ContainerFormat = {
-		decode(frame: Uint8Array): Frame[] {
+		decode({ payload: frame }: Group.Frame): Frame[] {
 			return [
 				{
 					payload: frame,
@@ -1655,5 +1664,5 @@ for (const end of [
 
 test("LegacyFormat rejects a timestamp past 2^53 - 1 instead of rounding", () => {
 	const frame = Varint.encode(2n ** 53n + 1n);
-	expect(() => new LegacyFormat("video").decode(frame)).toThrow(/larger than 53-bits/);
+	expect(() => new LegacyFormat("video").decode(wire(frame))).toThrow(/larger than 53-bits/);
 });
