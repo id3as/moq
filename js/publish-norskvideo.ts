@@ -34,7 +34,7 @@ const JS_DIR = import.meta.dir;
 
 // Forked packages IN DEPENDENCY (publish) ORDER. Dir name === @moq/<dir>.
 // External deps not listed here (notably @moq/qmux) are left on the @moq scope.
-const FORKED = ["signals", "flate", "net", "json", "loc", "msf", "hang", "watch"] as const;
+const FORKED = ["signals", "flate", "pattern", "net", "json", "loc", "msf", "hang", "watch"] as const;
 
 const SCOPE = "@norskvideo";
 const newName = (dir: string) => `${SCOPE}/moq-${dir}`; // @moq/net -> @norskvideo/moq-net
@@ -85,7 +85,7 @@ for (const dir of FORKED) {
 // ── phase 2: rewrite each dist/ to @norskvideo, then publish ─────────
 console.log(`\n── ${doPublish ? "publishing" : "DRY RUN (npm pack)"} @ ${VERSION} ──`);
 // The scope needs an OTP, which is short-lived: ask for it here, after the
-// builds, unless --otp gave one. A code should cover the 8 publishes in a row.
+// builds, unless --otp gave one. A code should cover the publishes in a row.
 let otp = OTP;
 if (doPublish && !otp) {
 	otp = prompt("npm OTP for the @norskvideo scope:")?.trim() || undefined;
