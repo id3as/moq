@@ -21,8 +21,7 @@
 	},
 	"dependencies": {
 		"@moq/net": "workspace:^",
-		"@zod/mini": "^4.6.5",
-		"zod": "^4.6.5"
+		"zod": "^4.4.3"
 	},
 	"devDependencies": {
 		"rimraf": "^6.1.3",

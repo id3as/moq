@@ -32,8 +32,7 @@
 		"@moq/signals": "workspace:^",
 		"@svta/cml-iso-bmff": "^1.0.6",
 		"@svta/cml-utils": "1.6.1",
-		"@zod/mini": "^4.6.5",
-		"zod": "^4.6.5"
+		"zod": "^4.4.3"
 	},
 	"devDependencies": {
 		"@types/audioworklet": "^0.0.100",

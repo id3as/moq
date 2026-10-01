@@ -1,7 +1,7 @@
 import * as Json from "@moq/json";
 import type * as Moq from "@moq/net";
 import { Path } from "@moq/net";
-import * as z from "@zod/mini";
+import * as z from "zod/mini";
 import { ArchiveSchema } from "./archive";
 import { AudioSchema } from "./audio";
 import { BinarySchema } from "./binary";

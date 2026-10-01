@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Group, Error as NetError, Track } from "@moq/net";
-import * as z from "@zod/mini";
+import * as z from "zod/mini";
 import { Desync } from "../error.ts";
 import { Decoder } from "./decoder.ts";
 import { Encoder } from "./encoder.ts";

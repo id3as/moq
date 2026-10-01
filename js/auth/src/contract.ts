@@ -7,7 +7,7 @@
  * @module
  */
 
-import * as z from "@zod/mini";
+import * as z from "zod/mini";
 import { PatternListSchema } from "./claims.ts";
 
 /** How a session reached the relay; `http` is a one-shot request on the relay's web listener. */

@@ -1,5 +1,5 @@
 import { DEFAULT_MAX_FRAME_SIZE, Encoder as Flate } from "@moq/flate";
-import type * as z from "@zod/mini";
+import type * as z from "zod/mini";
 
 import { type Compression, isDeflate } from "../compression.ts";
 import { Desync } from "../error.ts";

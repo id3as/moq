@@ -25,10 +25,9 @@
 	"dependencies": {
 		"@hexagon/base64": "^2.0.4",
 		"@moq/pattern": "workspace:^",
-		"@zod/mini": "^4.6.5",
 		"commander": "^15.0.0",
 		"jose": "^6.2.12",
-		"zod": "^4.6.5"
+		"zod": "^4.4.3"
 	},
 	"devDependencies": {
 		"@types/bun": "^1.4.2",

@@ -1,4 +1,4 @@
-import * as z from "@zod/mini";
+import * as z from "zod/mini";
 import { nonzeroU53Schema, u53, u53Schema } from "./integers";
 import { RelativeBroadcastSchema } from "./path";
 

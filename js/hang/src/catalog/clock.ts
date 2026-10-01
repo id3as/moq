@@ -1,4 +1,4 @@
-import * as z from "@zod/mini";
+import * as z from "zod/mini";
 import { MOQ_EPOCH_UNIX_MILLIS } from "./archive";
 import { u53Schema } from "./integers";
 

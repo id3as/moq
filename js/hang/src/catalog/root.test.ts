@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import * as z from "@zod/mini";
+import * as z from "zod/mini";
 import { ARCHIVE_VERSION } from "./archive.ts";
 import { u53 } from "./integers.ts";
 import type { RelativeBroadcast } from "./path.ts";
