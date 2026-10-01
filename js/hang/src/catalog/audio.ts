@@ -60,6 +60,9 @@ export const AudioConfigSchema = z.object({
 		),
 	),
 
+	// The language of the audio, an RFC 5646 tag (MSF "lang"), for a player to choose by.
+	language: z.optional(z.string()),
+
 	// How far this rendition's frames reach the transport behind the broadcast's earliest
 	// rendition, in whole milliseconds rounded up. A player holds `delay + jitter` for it and never
 	// subtracts one rendition's `delay` from another's. Absent on the earliest rendition. It only

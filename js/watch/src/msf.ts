@@ -94,6 +94,7 @@ function toAudioConfig(track: Msf.Track): Catalog.AudioConfig | undefined {
 		bitrate: track.bitrate != null ? u53(track.bitrate) : undefined,
 		jitter: track.jitter != null ? u53(track.jitter) : undefined,
 		delay: track.delay != null ? delayMillis(track.delay) : undefined,
+		language: track.lang,
 	};
 }
 

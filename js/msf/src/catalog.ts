@@ -35,6 +35,9 @@ const trackShape = {
 	samplerate: z.optional(z.number()),
 	channelConfig: z.optional(z.string()),
 	bitrate: z.optional(z.number()),
+	// MSF "lang": the track's language, an RFC 5646 tag. With a publisher that
+	// carries every audio track, it is how a player tells one sound from another.
+	lang: z.optional(z.string()),
 	// Non-standard: whether the publisher recommends temporarily avoiding this track.
 	stalled: z.optional(z.boolean()),
 	/** Resolved base64 initialization data (draft-01's initRef indirection is resolved away). */

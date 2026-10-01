@@ -134,3 +134,31 @@ test("drops a rendition whose packaging is unknown", () => {
 
 	expect(toHang(catalog).video?.renditions.video).toBeUndefined();
 });
+
+test("carries an audio track's lang onto its rendition as language", () => {
+	const catalog: Msf.Catalog = {
+		tracks: [
+			{
+				name: "a-eng",
+				packaging: "loc",
+				role: "audio",
+				codec: "opus",
+				samplerate: 48000,
+				channelConfig: "2",
+				lang: "eng",
+			},
+			{
+				name: "a-spa",
+				packaging: "loc",
+				role: "audio",
+				codec: "opus",
+				samplerate: 48000,
+				channelConfig: "2",
+				lang: "spa",
+			},
+			{ name: "a-x", packaging: "loc", role: "audio", codec: "opus", samplerate: 48000, channelConfig: "2" },
+		],
+	};
+	const r = toHang(catalog).audio?.renditions ?? {};
+	expect([r["a-eng"]?.language, r["a-spa"]?.language, r["a-x"]?.language]).toEqual(["eng", "spa", undefined]);
+});

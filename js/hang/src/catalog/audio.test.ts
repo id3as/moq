@@ -24,3 +24,21 @@ test("audio config accepts a human-readable label", () => {
 
 	expect(config.label).toBe("English");
 });
+
+test("keeps an audio rendition's language (RFC 5646), for a player to choose by", () => {
+	const config = AudioConfigSchema.parse({
+		codec: "mp4a.40.2",
+		container: { kind: "legacy" },
+		sampleRate: 48_000,
+		numberOfChannels: 2,
+		language: "spa",
+	});
+	expect(config.language).toBe("spa");
+	const none = AudioConfigSchema.parse({
+		codec: "mp4a.40.2",
+		container: { kind: "legacy" },
+		sampleRate: 48_000,
+		numberOfChannels: 2,
+	});
+	expect(none.language).toBeUndefined();
+});

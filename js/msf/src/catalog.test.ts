@@ -271,3 +271,39 @@ test("round-trips a __proto__ extension member as data", () => {
 	expect(Object.keys(wire)).toContain("__proto__");
 	expect(wire.ok).toBe(2);
 });
+
+// MSF "lang" (RFC 5646): with a publisher that carries every audio track, it is
+// how a player tells one sound from another. Norsk's egest emits it.
+test("keeps a track's lang, and round-trips it", () => {
+	const catalog = decode(
+		encodeJson({
+			version: "draft-01",
+			tracks: [
+				{
+					name: "a-eng",
+					packaging: "cmaf",
+					isLive: true,
+					role: "audio",
+					codec: "mp4a.40.2",
+					lang: "eng",
+					altGroup: 2,
+				},
+				{
+					name: "a-spa",
+					packaging: "cmaf",
+					isLive: true,
+					role: "audio",
+					codec: "mp4a.40.2",
+					lang: "spa",
+					altGroup: 2,
+				},
+				{ name: "v", packaging: "cmaf", isLive: true, role: "video", codec: "avc1.42C01F" },
+			],
+		}),
+	);
+	expect(catalog.tracks.map((t) => t.lang)).toEqual(["eng", "spa", undefined]);
+	const again = decodeJson(encode(catalog));
+	const tracks = again.tracks as { name: string; lang?: string }[];
+	expect(tracks.find((t) => t.name === "a-spa")?.lang).toBe("spa");
+	expect("lang" in (tracks.find((t) => t.name === "v") ?? {})).toBe(false);
+});

@@ -42,6 +42,8 @@ export type PlayerInput = {
 	buffer: Getter<Time.Milli>;
 	/** Desired video rendition or quality limits. */
 	target: Getter<Video.Target | undefined>;
+	/** Desired audio rendition by track name (a language, say); unset takes the first playable. */
+	audioTarget: Getter<Audio.Target | undefined>;
 	/** Selected caption track, or undefined for off. */
 	captions: Getter<string | undefined>;
 };
@@ -93,6 +95,7 @@ export class Player {
 			delay: getter(props.delay ?? "auto"),
 			buffer: getter(props.buffer ?? Time.Milli.zero),
 			target: getter<Video.Target | undefined>(props.target),
+			audioTarget: getter<Audio.Target | undefined>(props.audioTarget),
 			captions: getter<string | undefined>(props.captions),
 		});
 
@@ -107,6 +110,7 @@ export class Player {
 		});
 		const audioSource = new Audio.Source({
 			broadcast: this.broadcast,
+			target: this.in.audioTarget,
 			supported: Audio.Decoder.supported,
 		});
 		this.#signals.cleanup(() => {
