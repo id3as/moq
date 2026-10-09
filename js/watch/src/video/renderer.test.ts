@@ -106,4 +106,55 @@ describe("Renderer", () => {
 			renderer.close();
 		}
 	});
+
+	// "tab" downloads wherever the canvas is (Studio's off-screen monitor tiles
+	// need that) but, unlike "always", stops once the tab has been hidden for
+	// the grace, so a backgrounded player does not build a backlog to
+	// fast-forward through on return.
+	describe('visible "tab"', () => {
+		class FakeDoc extends EventTarget {
+			hidden = false;
+			set(hidden: boolean) {
+				this.hidden = hidden;
+				this.dispatchEvent(new Event("visibilitychange"));
+			}
+		}
+		const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+		const decoder = () =>
+			({
+				out: { display: new Signal(undefined), frame: new Signal<VideoFrame | undefined>(undefined) },
+				source: { out: { catalog: new Signal(undefined) } },
+			}) as unknown as Decoder;
+
+		it("downloads while the tab is visible, and stops once it has been hidden for the grace", async () => {
+			const doc = new FakeDoc();
+			const renderer = new Renderer({ decoder: decoder(), visible: "tab", document: doc, hiddenGrace: 20 });
+			try {
+				await settle();
+				expect(renderer.out.visible.peek()).toBe(true);
+				doc.set(true);
+				await wait(5);
+				expect(renderer.out.visible.peek()).toBe(true);
+				await wait(40);
+				expect(renderer.out.visible.peek()).toBe(false);
+				doc.set(false);
+				await settle();
+				expect(renderer.out.visible.peek()).toBe(true);
+			} finally {
+				renderer.close();
+			}
+		});
+
+		it('"always" still ignores the tab', async () => {
+			const doc = new FakeDoc();
+			doc.hidden = true;
+			const renderer = new Renderer({ decoder: decoder(), visible: "always", document: doc, hiddenGrace: 1 });
+			try {
+				await wait(10);
+				expect(renderer.out.visible.peek()).toBe(true);
+			} finally {
+				renderer.close();
+			}
+		});
+	});
 });

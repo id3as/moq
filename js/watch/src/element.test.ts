@@ -25,3 +25,12 @@ test("importing the entrypoint registers <moq-watch> before the import finishes"
 	require("./element");
 	expect(registry.get("moq-watch")).toBeDefined();
 });
+
+// "tab" is the policy for players that must keep running off screen but not in
+// a background tab; an attribute spelling it was refused as invalid.
+test('visible="tab" is accepted', () => {
+	const { parseVisible } = require("./element");
+	expect(parseVisible("tab")).toBe("tab");
+	expect(parseVisible("always")).toBe("always");
+	expect(parseVisible("200")).toBe("200px");
+});
