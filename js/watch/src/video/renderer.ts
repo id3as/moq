@@ -3,6 +3,7 @@ import { Time } from "@moq/net";
 import { Effect, type Getter, getter, type Inputs, type Readonlys, readonlys, Signal } from "@moq/signals";
 import type { Decoder } from "./decoder";
 import { canvasPresentationTransform } from "./presentation";
+import { TabVisible, type VisibilitySource } from "./tab-visible";
 
 // Fraction of the canvas that must intersect the viewport before it counts as visible.
 const INTERSECTION_THRESHOLD = 0.01;
@@ -12,24 +13,34 @@ const INTERSECTION_THRESHOLD = 0.01;
  *
  * - `"never"`: never download video.
  * - `"always"`: always download video, regardless of the canvas position or tab visibility.
+ * - `"tab"`: download wherever the canvas is, while the tab is visible (an off-screen tile keeps
+ *   playing; a background tab stops).
  * - a CSS length (`"0px"`, `"200px"`, `"100%"`, ...): download while the canvas is within
  *   that distance of the viewport (used as the {@link IntersectionObserver} `rootMargin`) and
  *   the tab is visible. `"0px"` means strictly on screen; larger values pre-warm the video
  *   before it scrolls in.
+ *
+ * Whatever the policy, other than `"always"`, a hidden tab only stops video once it has been
+ * hidden for `hiddenGrace`, so a quick flip to another tab and back does not interrupt it.
  */
-export type Visible = "never" | "always" | (string & {});
+export type Visible = "never" | "always" | "tab" | (string & {});
 
 export type RendererInput = {
 	canvas: Getter<HTMLCanvasElement | undefined>;
 
 	// When video is downloaded relative to the canvas position. See {@link Visible}. Defaults to "20%".
 	visible: Getter<Visible>;
+
+	// How long, in milliseconds, the tab must stay hidden before video stops. Defaults to 5000.
+	hiddenGrace: Getter<number>;
 };
 
 /** Constructor properties for {@link Renderer}. */
 export type RendererProps = Inputs<RendererInput> & {
 	/** Decoder supplying video frames. */
 	decoder: Decoder;
+	/** The document whose visibility counts. Defaults to the global `document`. */
+	document?: VisibilitySource;
 };
 
 type RendererOutput = {
@@ -59,13 +70,16 @@ export class Renderer {
 
 	#ctx = new Signal<CanvasRenderingContext2D | undefined>(undefined);
 	#signals = new Effect();
+	readonly #tab: TabVisible;
 
 	constructor(props: RendererProps) {
 		this.decoder = props.decoder;
 		this.in = {
 			canvas: getter(props?.canvas),
 			visible: getter(props?.visible ?? "20%"),
+			hiddenGrace: getter(props?.hiddenGrace ?? 5000),
 		};
+		this.#tab = new TabVisible({ doc: props.document, grace: this.in.hiddenGrace });
 
 		this.#signals.run((effect) => {
 			const canvas = effect.get(this.in.canvas);
@@ -106,6 +120,14 @@ export class Renderer {
 			return;
 		}
 
+		const tabVisible = effect.get(this.#tab.visible);
+
+		if (visible === "tab") {
+			this.#out.visible.set(tabVisible);
+			effect.cleanup(() => this.#out.visible.set(false));
+			return;
+		}
+
 		// A distance gates on the viewport (used as the rootMargin) and the tab being visible.
 		const canvas = effect.get(this.in.canvas);
 		if (!canvas) {
@@ -115,7 +137,7 @@ export class Renderer {
 
 		let intersecting = false;
 		const update = () => {
-			this.#out.visible.set(intersecting && !document.hidden);
+			this.#out.visible.set(intersecting && tabVisible);
 		};
 
 		const callback = (entries: IntersectionObserverEntry[]) => {
@@ -136,7 +158,6 @@ export class Renderer {
 		}
 
 		update();
-		effect.event(document, "visibilitychange", update);
 		observer.observe(canvas);
 		effect.cleanup(() => observer.disconnect());
 		effect.cleanup(() => this.#out.visible.set(false));
@@ -213,5 +234,6 @@ export class Renderer {
 		});
 		this.#out.timestamp.set(undefined);
 		this.#signals.close();
+		this.#tab.close();
 	}
 }
