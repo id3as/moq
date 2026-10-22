@@ -19,6 +19,7 @@ import { nextMedia, subscribeMedia } from "../media";
 import type { Sync } from "../sync";
 import { type AudioBuffer, createAudioBuffer } from "./buffer";
 import { type DecoderConfig, decoderConfig, type PlaybackIdentity, playbackIdentity } from "./config";
+import { AudioDecodeLoop } from "./decode-loop";
 import { Handover } from "./handover";
 import { ringSamples } from "./latency";
 // Compiled and inlined as a blob URL via vite-plugin-worklet.
@@ -312,24 +313,6 @@ export class Decoder {
 			const loaded = await Util.Libav.polyfill();
 			if (!loaded) return; // cancelled
 
-			const warmup = new Warmup(LEGACY_WARMUP_CALLBACKS);
-
-			const decoder = new AudioDecoder({
-				output: (data) => {
-					const decoded = this.#terminal.span(data);
-					if (warmup.drop()) {
-						// Drop initial callbacks to prime the decoder.
-						data.close();
-						return;
-					}
-					this.#emit(data, decoded);
-				},
-				error: (error) => console.error("audio decoder error", error),
-			});
-			effect.cleanup(() => {
-				if (decoder.state !== "closed") decoder.close();
-			});
-
 			// Opus in CMAF uses raw packets; dOps is not a valid OGG Identification Header.
 			const description =
 				config.codec === "opus"
@@ -343,15 +326,30 @@ export class Decoder {
 				numberOfChannels: config.numberOfChannels,
 				description,
 			};
-			decoder.configure(decoderConfig);
+			const decoder = new AudioDecodeLoop({
+				config: decoderConfig,
+				// Each decoder, a replacement included, primes on its own first callbacks.
+				create: () => {
+					const warmup = new Warmup(LEGACY_WARMUP_CALLBACKS);
+					return new AudioDecoder({
+						output: (data) => {
+							const decoded = this.#terminal.span(data);
+							if (warmup.drop()) {
+								data.close();
+								return;
+							}
+							this.#emit(data, decoded);
+						},
+						error: (error) => console.error("audio decoder error", error),
+					});
+				},
+			});
+			effect.cleanup(() => decoder.close());
 
 			for (;;) {
 				const next = await nextMedia(consumer);
 				if (!next) break;
-				if (this.#onNext(next)) {
-					decoder.reset();
-					decoder.configure(decoderConfig);
-				}
+				if (this.#onNext(next)) decoder.reset();
 				if (next.end !== undefined) {
 					continue;
 				}
@@ -371,16 +369,7 @@ export class Decoder {
 				// it, keeping the lookahead above the floor as Opus instead of decoded PCM. No-op live.
 				await this.#ring?.wait(frame.timestamp as Time.Micro);
 
-				const chunk = new EncodedAudioChunk({
-					type: frame.keyframe ? "key" : "delta",
-					data: frame.payload,
-					timestamp: frame.timestamp,
-				});
-
-				// A fatal decode error closes the decoder, so decoding again throws InvalidStateError out
-				// of this loop. Stop instead: the error callback already reported the real failure.
-				if (decoder.state === "closed") break;
-				decoder.decode(chunk);
+				decoder.decode(frame);
 			}
 		});
 	}
@@ -419,32 +408,28 @@ export class Decoder {
 			const loaded = await Util.Libav.polyfill();
 			if (!loaded) return; // cancelled
 
-			const decoder = new AudioDecoder({
-				output: (data) => this.#emit(data),
-				error: (error) => console.error("audio decoder error", error),
-			});
-			effect.cleanup(() => {
-				if (decoder.state !== "closed") decoder.close();
-			});
-
 			// Configure decoder with description from catalog
-			const decoderConfig: AudioDecoderConfig = {
-				codec: config.codec,
-				sampleRate: config.sampleRate,
-				numberOfChannels: config.numberOfChannels,
-				description,
-			};
-			decoder.configure(decoderConfig);
+			const decoder = new AudioDecodeLoop({
+				config: {
+					codec: config.codec,
+					sampleRate: config.sampleRate,
+					numberOfChannels: config.numberOfChannels,
+					description,
+				},
+				create: () =>
+					new AudioDecoder({
+						output: (data) => this.#emit(data),
+						error: (error) => console.error("audio decoder error", error),
+					}),
+			});
+			effect.cleanup(() => decoder.close());
 
 			for (;;) {
 				const next = await nextMedia(consumer);
 				if (!next) break;
 
 				// Reset and re-anchor before decoding the first frame of a new codec epoch.
-				if (this.#onNext(next)) {
-					decoder.reset();
-					decoder.configure(decoderConfig);
-				}
+				if (this.#onNext(next)) decoder.reset();
 
 				const { frame } = next;
 				if (!frame) continue;
@@ -460,14 +445,7 @@ export class Decoder {
 				// it, keeping the lookahead above the floor as Opus instead of decoded PCM. No-op live.
 				await this.#ring?.wait(frame.timestamp);
 
-				if (decoder.state === "closed") break;
-				decoder.decode(
-					new EncodedAudioChunk({
-						type: frame.keyframe ? "key" : "delta",
-						data: frame.payload,
-						timestamp: frame.timestamp,
-					}),
-				);
+				decoder.decode(frame);
 			}
 		});
 	}
