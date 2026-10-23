@@ -9,6 +9,7 @@ import type { Dynamic, Producer as OriginProducer, RequestSlot } from "../origin
 import * as Path from "../path.ts";
 import { wireOf } from "../wire.ts";
 import type { Established } from "./established.ts";
+import { grantedPrefixes, narrowPrefixes } from "./grants.ts";
 
 /**
  * Wire a session into `origin` for the session's lifetime: forward the peer's announced
@@ -29,13 +30,22 @@ import type { Established } from "./established.ts";
  */
 export function forwardAnnounced(conn: Established, origin: OriginProducer): void {
 	const originWire = wireOf(origin);
+
+	// A session opened with a token asks only for what the token lets it discover: the peer
+	// refuses SUBSCRIBE_NAMESPACE outside its `get` grants. A token granting none of our
+	// interests discovers nothing, so the session serves requests only.
+	const interests = originWire.interests();
+	const granted = grantedPrefixes(conn.url);
+	const prefixes = granted ? narrowPrefixes(interests, granted) : interests;
+	const discovery = conn.discovery && (!granted || prefixes.length > 0);
+
 	// Reassigned if discovery dies under a live session, so the origin stops counting this
 	// one as a discovering session. Called through a closure so the session's death always
 	// detaches whichever attachment is current.
-	let detach = originWire.attach(conn.discovery);
+	let detach = originWire.attach(discovery);
 
 	let dead = false;
-	let discovering = conn.discovery;
+	let discovering = discovery;
 	void conn.closed.then(() => {
 		dead = true;
 		detach();
@@ -48,7 +58,12 @@ export function forwardAnnounced(conn: Established, origin: OriginProducer): voi
 		return;
 	}
 
-	for (const prefix of originWire.interests()) {
+	if (!discovery) {
+		console.debug("token grants no broadcast discovery; broadcasts resolve on request only.");
+		return;
+	}
+
+	for (const prefix of prefixes) {
 		// Hidden routes are mirrored too; each local reader opts in on its own.
 		const announced = conn.announced(Path.Pattern.subtree(prefix), { hidden: true });
 		const inserted = new Map<Path.Valid, Dynamic>();

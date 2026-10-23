@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import * as Announce from "../announced.ts";
 import { type Consumer as BroadcastConsumer, Producer as BroadcastProducer } from "../broadcast.ts";
 import { Route } from "../hop.ts";
+import { scopeHead } from "../internal.ts";
 import { Producer as OriginProducer } from "../origin.ts";
 import * as Path from "../path.ts";
 import { registerWire, wireOf } from "../wire.ts";
@@ -31,15 +32,22 @@ class FakeSession {
 	closed: Promise<Error | null>;
 	#die!: (reason: Error | null) => void;
 
-	constructor(discovery = true) {
+	readonly url: URL;
+
+	/** The scope of every announce stream the forwarder opened, in order. */
+	readonly scopes: Path.Pattern[] = [];
+
+	constructor(discovery = true, url = new URL("https://relay.example/")) {
 		this.discovery = discovery;
+		this.url = url;
 		registerWire(this, { consume: (path) => this.consume(path) });
 		this.closed = new Promise((resolve) => {
 			this.#die = resolve;
 		});
 	}
 
-	announced(_scope?: Path.Pattern, _options?: Announce.Options): Announce.Consumer {
+	announced(scope: Path.Pattern = Path.Pattern.all(), _options?: Announce.Options): Announce.Consumer {
+		this.scopes.push(scope);
 		return this.announces.consume();
 	}
 
@@ -281,5 +289,56 @@ test("one failed scoped interest leaves the other routes live until the session 
 	await settle();
 	expect(origin.broadcasts().peek().size).toBe(0);
 	expect(origin.discovery.peek()).toBeUndefined();
+	origin.close();
+});
+
+function jwt(claims: unknown): string {
+	const part = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
+	return `${part({ alg: "EdDSA", kid: "k", typ: "JWT" })}.${part(claims)}.c2ln`;
+}
+
+function discovered(token?: string): { session: FakeSession; origin: OriginProducer; prefixes: Path.Valid[] } {
+	const url = new URL("https://relay.example/");
+	if (token !== undefined) url.searchParams.set("jwt", token);
+	const origin = new OriginProducer();
+	const session = new FakeSession(true, url);
+	forwardAnnounced(session.session, origin);
+	return { session, origin, prefixes: session.scopes.map(scopeHead) };
+}
+
+test("without a token discovery covers the root", () => {
+	const { origin, prefixes } = discovered();
+	expect(prefixes).toEqual([Path.empty()]);
+	expect(origin.discovery.peek()).toBe(true);
+	origin.close();
+});
+
+test("a token's root scopes discovery", () => {
+	const { origin, prefixes } = discovered(jwt({ root: "tenants/t1/rt1" }));
+	expect(prefixes).toEqual([Path.from("tenants/t1/rt1")]);
+	expect(origin.discovery.peek()).toBe(true);
+	origin.close();
+});
+
+test("a token's get grants scope discovery, one stream each", () => {
+	const { origin, prefixes } = discovered(jwt({ root: "r", get: ["slot/monitor", "program"] }));
+	expect(prefixes).toEqual([Path.from("r/program"), Path.from("r/slot/monitor")]);
+	origin.close();
+});
+
+test("a malformed token skips discovery and serves requests only", async () => {
+	const { session, origin, prefixes } = discovered("garbage");
+	expect(prefixes).toEqual([]);
+	expect(origin.discovery.peek()).toBe(false);
+
+	// An announcement-gated request falls straight back to a blind answer from this session.
+	const path = Path.from("room");
+	const watched = origin.request(path, { announced: true });
+	await settle();
+	await settle();
+	expect(watched.active.peek()).toBeDefined();
+	expect(session.consumes(path)).toBe(1);
+
+	watched.close();
 	origin.close();
 });
