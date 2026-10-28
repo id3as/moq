@@ -19,6 +19,11 @@
  * Prereqs: `bun install` in js/ (so tsc can resolve @moq/qmux etc.), and
  * `npm login` for the @norskvideo scope before using --publish.
  *
+ * In CI (.github/workflows/publish-norskvideo.yml) npm authenticates by OIDC
+ * trusted publishing instead: no token, no OTP, and --provenance is passed.
+ * That needs npm >= 11.5.1 and each package's repository.url to name the repo
+ * that publishes, hence the rewrite to id3as/moq below.
+ *
  * Consuming side: import the published packages as @norskvideo/moq-* (they
  * reference each other by that name, so importing them directly de-dupes the
  * shared singletons like @norskvideo/moq-signals — don't mix with @moq/* aliases).
@@ -48,8 +53,9 @@ const doPublish = args.includes("--publish");
 // each `npm publish` is a separate authenticated call. An OTP is short-lived, so
 // if the run outlives it npm will reject the remaining packages; re-run with a
 // fresh code and the already-published ones fail as duplicates, which is safe.
-// An automation token (npm token create --read-and-publish) avoids OTPs
-// entirely and is the better answer for CI.
+// CI avoids OTPs entirely via OIDC trusted publishing (see the header).
+// Under GitHub Actions npm authenticates by OIDC, which needs no OTP.
+const inActions = process.env.GITHUB_ACTIONS === "true";
 const otpIdx = args.indexOf("--otp");
 const OTP = otpIdx >= 0 ? args[otpIdx + 1] : undefined;
 const vIdx = args.indexOf("--version");
@@ -87,7 +93,7 @@ console.log(`\n── ${doPublish ? "publishing" : "DRY RUN (npm pack)"} @ ${VER
 // The scope needs an OTP, which is short-lived: ask for it here, after the
 // builds, unless --otp gave one. A code should cover the publishes in a row.
 let otp = OTP;
-if (doPublish && !otp) {
+if (doPublish && !otp && !inActions) {
 	otp = prompt("npm OTP for the @norskvideo scope:")?.trim() || undefined;
 	if (!otp) {
 		console.error("no OTP: nothing published");
@@ -101,6 +107,9 @@ for (const dir of FORKED) {
 
 	pkg.name = newName(dir);
 	pkg.version = VERSION;
+	// npm rejects a provenance publish whose repository.url is not the repo
+	// that built it.
+	if (pkg.repository) pkg.repository.url = "git+https://github.com/id3as/moq.git";
 
 	for (const field of ["dependencies", "peerDependencies"] as const) {
 		const deps: Record<string, string> | undefined = pkg[field];
@@ -125,6 +134,7 @@ for (const dir of FORKED) {
 	console.log(`\n▶ ${doPublish ? "publish" : "pack"} ${pkg.name}@${VERSION}`);
 	const npmArgs = doPublish ? ["publish", "--access", "public"] : ["pack", "--dry-run"];
 	if (doPublish && otp) npmArgs.push("--otp", otp);
+	if (doPublish && inActions) npmArgs.push("--provenance");
 	// A version the registry already has (an earlier run that stopped part way)
 	// is skipped, so a re-run finishes the set rather than failing at the first.
 	if (doPublish && published(pkg.name, VERSION)) {
